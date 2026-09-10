@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Local config with secrets (use config.json template + env vars)
+config.local.json
+
+# Database
+data/dashboard.db
+
+# Node
+web/node_modules/
+web/dist/
+
+# IDE
+.cursor/
+.vscode/
+*.swp
+
+# Temp clones / evidence
+/tmp/
+
+# Reports
+release-plan.md

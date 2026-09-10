@@ -1,0 +1,88 @@
+repository:
+  url: https://github.com/openshift/cert-manager-operator
+  # local_path is OPTIONAL -- if omitted, the tool auto-clones to a temp directory.
+  # Uncomment the line below to use a local checkout instead:
+  # local_path: /home/spatidar/Downloads/cert-manager-operator
+  components:
+    - name: operator
+      path: .
+
+jira:
+  # Set to true AND configure env vars to enable Jira integration:
+  #   JIRA_URL (or JIRA_BASE_URL), JIRA_API_TOKEN (or JIRA_TOKEN), JIRA_EMAIL
+  enabled: true
+  project_key: CM
+  project_name: "Cert Manager support for Red Hat OpenShift"
+  rebase_search_pattern: '(summary ~ "CVE" OR summary ~ "rebase") AND summary ~ "{version}"'
+  govcloud_search: 'summary ~ "GovCloud" AND summary ~ "Vulnerability"'
+  critical_bugs_search: 'priority in (Critical, Blocker) AND issuetype = Bug'
+  # Per-branch JQL: {project_key} and {branch} are substituted at scan time
+  vulnerability_jql: 'project = {project_key} AND issuetype = Vulnerability AND summary ~ "{branch}" AND statusCategory != Done ORDER BY created DESC'
+  # Red Hat Jira custom field mappings (configurable for other projects)
+  custom_fields:
+    cve_id: customfield_10667
+    downstream_component: customfield_10669
+    upstream_component: customfield_10632
+    cwe_id: customfield_10630
+    severity: customfield_10840
+    cvss_score: customfield_10859
+
+branches:
+  - name: cert-manager-1.20
+    ocp_version: "4.19"
+    cert_manager_version: "1.20"
+    support_start: "2026-06-01"
+    support_end: "2028-06-01"
+    is_eus: true
+    active: true
+
+  - name: cert-manager-1.19
+    ocp_version: "4.18"
+    cert_manager_version: "1.19"
+    support_start: "2026-03-01"
+    support_end: "2027-09-01"
+    is_eus: false
+    active: true
+
+  - name: cert-manager-1.18
+    ocp_version: "4.17"
+    cert_manager_version: "1.18"
+    support_start: "2025-12-01"
+    support_end: "2027-06-01"
+    is_eus: true
+    active: true
+
+  # Additional branches (inactive for demo, can be enabled)
+  - name: cert-manager-1.17
+    ocp_version: "4.16"
+    cert_manager_version: "1.17"
+    support_start: "2025-06-01"
+    support_end: "2027-06-01"
+    is_eus: false
+    active: false
+
+  - name: cert-manager-1.16
+    ocp_version: "4.15"
+    cert_manager_version: "1.16"
+    support_start: "2025-03-01"
+    support_end: "2026-09-01"
+    is_eus: false
+    active: false
+
+scanner:
+  min_cve_year: 2024
+  max_analyze_per_branch: 50
+  analyze_cve_allowlist: []
+
+effort_defaults:
+  version_bump_hours: 3
+  trivial_backport_hours: 8
+  non_trivial_backport_hours: 20
+  needs_review_hours: 28
+  testing_overhead_multiplier: 1.5
+
+urgency_rules:
+  critical_cve_days: 14
+  high_cve_days: 28
+  medium_low_batch: true
+  fedramp_sla_days: 30

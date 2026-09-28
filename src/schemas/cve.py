@@ -57,3 +57,10 @@ class BranchCVEOut(BaseModel):
 
 
 CVEDetailOut.model_rebuild()
+
+
+class JiraPostResult(BaseModel):
+    """Result of posting a CVE summary to Jira."""
+    status: str  # success, failed, skipped
+    jira_key: str
+    reason: str = ""

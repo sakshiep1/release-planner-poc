@@ -1,5 +1,10 @@
+# Multi-component configuration: override repository.url, jira.project_key,
+# jira.vulnerability_jql, and branch entries to reuse this tool for other
+# operators (OSTK, SSI, ESO, etc.).  See DOCUMENTATION.md for examples.
 repository:
   url: https://github.com/openshift/cert-manager-operator
+  # display_name is shown in the dashboard header.  Leave empty for default.
+  display_name: ""
   # local_path is OPTIONAL -- if omitted, the tool auto-clones to a temp directory.
   # Uncomment the line below to use a local checkout instead:
   # local_path: /home/spatidar/Downloads/cert-manager-operator
@@ -16,6 +21,10 @@ jira:
   rebase_search_pattern: '(summary ~ "CVE" OR summary ~ "rebase") AND summary ~ "{version}"'
   govcloud_search: 'summary ~ "GovCloud" AND summary ~ "Vulnerability"'
   critical_bugs_search: 'priority in (Critical, Blocker) AND issuetype = Bug'
+  # Jira write-back: post CVE summaries as comments on Vulnerability tickets
+  post_results_to_jira: false
+  post_label: "release-planner-posted"
+  skip_if_analyzed: true   # skip tickets already posted by analyze-cve
   # Per-branch JQL: {project_key} and {branch} are substituted at scan time
   vulnerability_jql: 'project = {project_key} AND issuetype = Vulnerability AND summary ~ "{branch}" AND statusCategory != Done ORDER BY created DESC'
   # Red Hat Jira custom field mappings (configurable for other projects)
@@ -31,6 +40,7 @@ branches:
   - name: cert-manager-1.20
     ocp_version: "4.19"
     cert_manager_version: "1.20"
+    go_version: "1.23"
     support_start: "2026-06-01"
     support_end: "2028-06-01"
     is_eus: true
@@ -39,6 +49,7 @@ branches:
   - name: cert-manager-1.19
     ocp_version: "4.18"
     cert_manager_version: "1.19"
+    go_version: "1.22"
     support_start: "2026-03-01"
     support_end: "2027-09-01"
     is_eus: false
@@ -47,6 +58,7 @@ branches:
   - name: cert-manager-1.18
     ocp_version: "4.17"
     cert_manager_version: "1.18"
+    go_version: "1.22"
     support_start: "2025-12-01"
     support_end: "2027-06-01"
     is_eus: true
@@ -56,6 +68,7 @@ branches:
   - name: cert-manager-1.17
     ocp_version: "4.16"
     cert_manager_version: "1.17"
+    go_version: "1.22"
     support_start: "2025-06-01"
     support_end: "2027-06-01"
     is_eus: false
@@ -64,6 +77,7 @@ branches:
   - name: cert-manager-1.16
     ocp_version: "4.15"
     cert_manager_version: "1.16"
+    go_version: "1.21"
     support_start: "2025-03-01"
     support_end: "2026-09-01"
     is_eus: false

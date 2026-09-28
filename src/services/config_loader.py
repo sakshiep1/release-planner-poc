@@ -19,6 +19,7 @@ class RepositoryConfig(BaseModel):
     url: str = ""
     local_path: str | None = None
     components: list[ComponentConfig] = Field(default_factory=list)
+    display_name: str = ""
 
 
 class JiraCustomFieldMapping(BaseModel):
@@ -44,12 +45,16 @@ class JiraConfig(BaseModel):
     )
     project_name: str = "Cert Manager support for Red Hat OpenShift"
     custom_fields: JiraCustomFieldMapping = Field(default_factory=JiraCustomFieldMapping)
+    post_results_to_jira: bool = False
+    post_label: str = "release-planner-posted"
+    skip_if_analyzed: bool = True
 
 
 class BranchConfig(BaseModel):
     name: str
     ocp_version: str = ""
     cert_manager_version: str = ""
+    go_version: str = ""
     support_start: date | None = None
     support_end: date | None = None
     is_eus: bool = False

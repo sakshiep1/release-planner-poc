@@ -34,6 +34,7 @@ async def list_branches(db: DBSession):
             name=b.name,
             ocp_version=b.ocp_version,
             cert_manager_version=b.cert_manager_version,
+            go_version=b.go_version,
             support_start=b.support_start,
             support_end=b.support_end,
             is_eus=b.is_eus,
@@ -60,6 +61,7 @@ async def sync_branches(db: DBSession):
                 name=bc.name,
                 ocp_version=bc.ocp_version,
                 cert_manager_version=bc.cert_manager_version,
+                go_version=bc.go_version,
                 support_start=bc.support_start,
                 support_end=bc.support_end,
                 is_eus=bc.is_eus,
@@ -71,6 +73,7 @@ async def sync_branches(db: DBSession):
         else:
             existing.ocp_version = bc.ocp_version
             existing.cert_manager_version = bc.cert_manager_version
+            existing.go_version = bc.go_version
             existing.support_start = bc.support_start
             existing.support_end = bc.support_end
             existing.is_eus = bc.is_eus
@@ -90,6 +93,7 @@ async def sync_branches(db: DBSession):
                 continue
             existing.ocp_version = bc.ocp_version
             existing.cert_manager_version = bc.cert_manager_version
+            existing.go_version = bc.go_version
             existing.support_start = bc.support_start
             existing.support_end = bc.support_end
             existing.is_eus = bc.is_eus

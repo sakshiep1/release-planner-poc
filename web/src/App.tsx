@@ -148,10 +148,12 @@ function CVEMatrix({
   data,
   jiraBaseUrl,
   onCVEClick,
+  branches,
 }: {
   data: MatrixOut | null;
   jiraBaseUrl: string;
   onCVEClick: (cveId: string) => void;
+  branches: ReleaseBranch[];
 }) {
   if (!data || data.rows.length === 0)
     return <p className="text-terminal-muted italic">No CVE data loaded.</p>;
@@ -168,11 +170,17 @@ function CVEMatrix({
             <th className="px-3 py-2 text-left">Fix Type</th>
             <th className="px-3 py-2 text-left">Module</th>
             <th className="px-2 py-2 text-center w-10">Jira</th>
-            {data.branch_names.map((b) => (
-              <th key={b} className="px-2 py-2 text-center whitespace-nowrap">
-                {b.replace("cert-manager-", "")}
-              </th>
-            ))}
+            {data.branch_names.map((b) => {
+              const br = branches.find((x) => x.name === b);
+              return (
+                <th key={b} className="px-2 py-2 text-center whitespace-nowrap">
+                  <div>{b.replace(/^cert-manager-/, "")}</div>
+                  {br?.go_version && (
+                    <div className="text-[9px] text-cyan-400 font-normal mt-0.5">Go {br.go_version}</div>
+                  )}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody className="divide-y divide-terminal-border/40">
@@ -238,6 +246,52 @@ function CVEMatrix({
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ─── Post to Jira Button ─────────────────────────────────────
+function PostToJiraButton({ cveId }: { cveId: string }) {
+  const [status, setStatus] = useState<"idle" | "posting" | "success" | "failed" | "skipped">("idle");
+  const [message, setMessage] = useState("");
+
+  const handlePost = async () => {
+    setStatus("posting");
+    setMessage("");
+    try {
+      const result = await api.postCVEToJira(cveId);
+      setStatus(result.status as "success" | "failed" | "skipped");
+      setMessage(result.reason);
+    } catch (err: unknown) {
+      setStatus("failed");
+      setMessage(err instanceof Error ? err.message : "Unknown error");
+    }
+  };
+
+  const btnColors: Record<string, string> = {
+    idle: "bg-purple-900/60 hover:bg-purple-800/70 text-purple-200 border-purple-700",
+    posting: "bg-terminal-surface text-terminal-muted border-terminal-border cursor-wait",
+    success: "bg-green-900/60 text-green-300 border-green-700",
+    failed: "bg-red-900/60 text-red-300 border-red-700",
+    skipped: "bg-yellow-900/40 text-yellow-300 border-yellow-700",
+  };
+
+  return (
+    <div>
+      <button
+        onClick={handlePost}
+        disabled={status === "posting"}
+        className={`w-full px-3 py-2 text-sm rounded border transition ${btnColors[status]}`}
+      >
+        {status === "idle" && "📤 Post Summary to Jira"}
+        {status === "posting" && "Posting…"}
+        {status === "success" && "✅ Posted"}
+        {status === "failed" && "❌ Failed — Click to retry"}
+        {status === "skipped" && "⏭ Skipped"}
+      </button>
+      {message && (
+        <p className="text-xs text-terminal-muted mt-1">{message}</p>
+      )}
     </div>
   );
 }
@@ -369,6 +423,11 @@ function CVEDetailPanel({
                 </div>
               )}
             </div>
+
+            {/* Post to Jira button */}
+            {detail.jira_key && (
+              <PostToJiraButton cveId={detail.cve_id} />
+            )}
 
             {/* All linked Jira tickets across branches */}
             {(() => {
@@ -1031,7 +1090,7 @@ function SSEProgress({
         </svg>
         <div className="flex-1 min-w-0">
           <div className="font-medium truncate">
-            {msg.branch ? msg.branch.replace("cert-manager-", "") : "Branch"}
+            {msg.branch ? msg.branch.replace(/^cert-manager-/, "") : "Branch"}
             <span className="text-terminal-muted font-normal ml-1">
               — {scanStatusLabel(msg.status)}
             </span>
@@ -1081,7 +1140,7 @@ function AnalysisOverlay({ progress }: { progress: ScanProgressMsg | null }) {
             </div>
             {progress.branch && (
               <div className="text-xs text-terminal-muted mt-0.5">
-                {progress.branch.replace("cert-manager-", "")}
+                {progress.branch.replace(/^cert-manager-/, "")}
               </div>
             )}
             {progress.cve && (
@@ -1172,7 +1231,7 @@ function ScanControls({
           Analyze Branch
         </h3>
         <div className="text-[10px] text-terminal-muted mb-1">
-          {selectedBranch ? selectedBranch.replace("cert-manager-", "") : "Select a branch above"}
+          {selectedBranch ? selectedBranch.replace(/^cert-manager-/, "") : "Select a branch above"}
         </div>
         <button
           className="w-full px-3 py-2 bg-terminal-green/20 border border-terminal-green text-terminal-green text-xs rounded hover:bg-terminal-green/30 transition disabled:opacity-40"
@@ -1238,6 +1297,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [scanHistoryKey, setScanHistoryKey] = useState(0);
   const [jiraBaseUrl, setJiraBaseUrl] = useState("https://redhat.atlassian.net");
+  const [displayName, setDisplayName] = useState("");
   const [scanProgress, setScanProgress] = useState<ScanProgressMsg | null>(null);
   const branchInitialized = useRef(false);
   const branchSyncInFlight = useRef<Promise<void> | null>(null);
@@ -1287,6 +1347,8 @@ export default function App() {
     api.getConfig().then((cfg) => {
       const url = (cfg.jira as { url?: string })?.url;
       if (url) setJiraBaseUrl(url);
+      const dn = (cfg.repository as { display_name?: string })?.display_name;
+      if (dn) setDisplayName(dn);
     }).catch(() => {});
   }, [loadBranches]);
 
@@ -1317,7 +1379,7 @@ export default function App() {
             Release Planner
           </h1>
           <span className="text-xs text-terminal-muted">
-            cert-manager z-stream
+            {displayName || "z-stream release planner"}
           </span>
         </div>
         <div className="flex items-center gap-4">
@@ -1326,7 +1388,7 @@ export default function App() {
             selected={selectedBranch}
             onChange={setSelectedBranch}
           />
-          <div className="text-xs text-terminal-muted">CM-1217 POC v5</div>
+          <div className="text-xs text-terminal-muted">CM-1143 POC v6</div>
         </div>
       </header>
 
@@ -1414,7 +1476,7 @@ export default function App() {
 
           <div className="overflow-auto">
             {tab === "matrix" && (
-              <CVEMatrix data={matrix} jiraBaseUrl={jiraBaseUrl} onCVEClick={setSelectedCVE} />
+              <CVEMatrix data={matrix} jiraBaseUrl={jiraBaseUrl} onCVEClick={setSelectedCVE} branches={branches} />
             )}
             {tab === "effort" && <EffortSummary data={effort} />}
             {tab === "plan" && <ReleasePlan data={plan} />}

@@ -10,6 +10,7 @@ class BranchOut(BaseModel):
     name: str
     ocp_version: str
     cert_manager_version: str
+    go_version: str = ""
     support_start: date | None = None
     support_end: date | None = None
     is_eus: bool = False

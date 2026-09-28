@@ -3,6 +3,7 @@ export interface ReleaseBranch {
   name: string;
   ocp_version: string;
   cert_manager_version: string;
+  go_version: string;
   support_start: string | null;
   support_end: string | null;
   is_eus: boolean;
@@ -139,6 +140,12 @@ export interface ConfigOut {
   branches: Record<string, unknown>[];
   effort_defaults: Record<string, unknown>;
   urgency_rules: Record<string, unknown>;
+}
+
+export interface JiraPostResult {
+  status: string;
+  jira_key: string;
+  reason: string;
 }
 
 export interface JiraStatus {

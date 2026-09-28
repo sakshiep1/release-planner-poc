@@ -16,6 +16,7 @@ class ReleaseBranch(Base):
     name: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     ocp_version: Mapped[str] = mapped_column(String(32), default="")
     cert_manager_version: Mapped[str] = mapped_column(String(32), default="")
+    go_version: Mapped[str] = mapped_column(String(20), default="", server_default="")
     support_start: Mapped[date | None] = mapped_column(Date, nullable=True)
     support_end: Mapped[date | None] = mapped_column(Date, nullable=True)
     is_eus: Mapped[bool] = mapped_column(Boolean, default=False)

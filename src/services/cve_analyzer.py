@@ -290,6 +290,7 @@ async def discover_from_jira(
     from src.services.jira_discovery import (
         discover_vulnerability_tickets_for_branch,
         _jira_status_to_verdict,
+        _get_jira_credentials,
     )
 
     scan = ScanRun(
@@ -405,6 +406,41 @@ async def discover_from_jira(
         "Jira discovery for %s: %d tickets → %d unique CVE IDs → %d CVE rows on branch (%d new)",
         branch.name, tickets_total, unique_in_scan, branch_cve_count, imported,
     )
+
+    # Post CVE summaries to Jira if enabled (never fails the pipeline)
+    config = get_releases_config()
+    if config.jira.post_results_to_jira:
+        try:
+            from src.services.jira_poster import post_cve_summary_to_jira
+
+            jira_url, api_token, email = _get_jira_credentials()
+            if jira_url and api_token and email:
+                for ticket in tickets:
+                    if not ticket.jira_key:
+                        continue
+                    try:
+                        await post_cve_summary_to_jira(
+                            jira_key=ticket.jira_key,
+                            cve_id=ticket.cve_id,
+                            severity=ticket.severity,
+                            cvss_score=ticket.cvss_score,
+                            source="jira",
+                            branch_summaries=[{
+                                "branch_name": branch.name,
+                                "risk_level": ticket.severity,
+                                "fix_type": "N/A",
+                                "effort_tshirt": "",
+                                "confidence": "HIGH",
+                            }],
+                            jira_url=jira_url,
+                            email=email,
+                            api_token=api_token,
+                        )
+                    except Exception:
+                        logger.debug("Jira post failed for %s (non-fatal)", ticket.jira_key, exc_info=True)
+        except Exception:
+            logger.debug("Jira posting skipped due to error (non-fatal)", exc_info=True)
+
     return scan
 
 

@@ -7,6 +7,7 @@ import type {
   ScanRunOut,
   ConfigOut,
   JiraStatus,
+  JiraPostResult,
 } from "../types";
 
 const BASE = "/api/v1";
@@ -74,4 +75,15 @@ export const api = {
   generatePlan: () => fetch(`${BASE}/plan/generate`, { method: "POST" }),
 
   syncBranches: () => fetch(`${BASE}/branches/sync`, { method: "POST" }),
+
+  postCVEToJira: async (cveId: string): Promise<JiraPostResult> => {
+    const res = await fetch(`${BASE}/cves/${cveId}/post-to-jira`, {
+      method: "POST",
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(`${res.status}: ${detail}`);
+    }
+    return res.json();
+  },
 };

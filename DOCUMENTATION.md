@@ -922,4 +922,125 @@ For a POC, Option A (single post-pipeline call) provides the best value-to-effor
 
 ---
 
+## 15. Multi-Component Reusability
+
+The Release Planner is designed to work with **any OpenShift operator**, not just cert-manager.
+Adapting it for another component requires only configuration changes in `releases.yaml`.
+
+### 15.1 What to Customise in `releases.yaml`
+
+| Section | Field | Purpose |
+|---------|-------|---------|
+| `repository` | `url` | Git URL of the operator to scan |
+| `repository` | `display_name` | Dashboard header subtitle (e.g. "OSTK z-stream") |
+| `repository` | `components[].name/path` | Sub-directories to govulncheck |
+| `jira` | `project_key` | Jira project key (e.g. `OSTK`, `SSI`, `ESO`) |
+| `jira` | `project_name` | Full project name used in vulnerability JQL |
+| `jira` | `vulnerability_jql` | JQL template — `{project_key}` and `{branch}` are substituted |
+| `jira` | `rebase_search_pattern` | JQL for rebase/CVE stories |
+| `jira` | `custom_fields.*` | Custom field IDs if different from Red Hat defaults |
+| `branches` | per-entry | Branch names, OCP versions, Go versions, support dates |
+
+### 15.2 Example: OpenStack Operator (OSTK)
+
+```yaml
+repository:
+  url: https://github.com/openshift/openstack-operator
+  display_name: "OSTK z-stream"
+  components:
+    - name: operator
+      path: .
+
+jira:
+  enabled: true
+  project_key: OSTK
+  project_name: "OpenStack support for Red Hat OpenShift"
+  vulnerability_jql: >-
+    project = {project_key} AND issuetype = Vulnerability
+    AND summary ~ "{branch}" AND statusCategory != Done
+    ORDER BY created DESC
+  rebase_search_pattern: '(summary ~ "CVE" OR summary ~ "rebase") AND summary ~ "{version}"'
+
+branches:
+  - name: openstack-18.0
+    ocp_version: "4.18"
+    cert_manager_version: ""
+    go_version: "1.22"
+    support_start: "2026-03-01"
+    support_end: "2027-06-01"
+    active: true
+```
+
+### 15.3 Example: SSI (Service Interconnect)
+
+```yaml
+repository:
+  url: https://github.com/openshift/skupper-operator
+  display_name: "SSI z-stream"
+  components:
+    - name: operator
+      path: .
+
+jira:
+  enabled: true
+  project_key: SSI
+  project_name: "Service Interconnect for Red Hat OpenShift"
+
+branches:
+  - name: ssi-1.8
+    ocp_version: "4.17"
+    cert_manager_version: ""
+    go_version: "1.22"
+    support_start: "2025-11-01"
+    support_end: "2027-05-01"
+    active: true
+```
+
+### 15.4 Example: External Secrets Operator (ESO)
+
+```yaml
+repository:
+  url: https://github.com/openshift/external-secrets-operator
+  display_name: "ESO z-stream"
+  components:
+    - name: operator
+      path: .
+
+jira:
+  enabled: true
+  project_key: ESO
+  project_name: "External Secrets Operator for Red Hat OpenShift"
+
+branches:
+  - name: eso-0.12
+    ocp_version: "4.18"
+    cert_manager_version: ""
+    go_version: "1.23"
+    support_start: "2026-04-01"
+    support_end: "2027-10-01"
+    active: true
+```
+
+### 15.5 Remaining Cert-Manager Assumptions
+
+The following items still reference cert-manager by convention but are **not** hard-coded
+barriers — they work generically:
+
+| Item | Location | Behaviour |
+|------|----------|-----------|
+| Branch prefix stripping | `App.tsx` | Uses regex `^cert-manager-` — other prefixes display as-is |
+| `cert_manager_version` field | `BranchConfig`, DB model | Kept for backward compat; can be left empty for non-CM operators |
+| Default JQL templates | `config_loader.py` | Defaults target CM project; overridden per config |
+
+### 15.6 Deployment Checklist for a New Component
+
+1. Copy `releases.yaml` and update `repository`, `jira`, and `branches` sections
+2. Optionally set `repository.display_name` for dashboard branding
+3. Set `JIRA_URL`, `JIRA_API_TOKEN`, `JIRA_EMAIL` environment variables (or `config.json`)
+4. Run `POST /api/v1/branches/sync` to populate the database
+5. Run `POST /api/v1/scans/run` to start discovery
+6. The dashboard will adapt automatically — no code changes required
+
+---
+
 *This document was generated from the Release Planner POC codebase. All code references point to the actual source files in the repository.*

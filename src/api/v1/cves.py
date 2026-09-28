@@ -11,7 +11,7 @@ from src.core.dependencies import DBSession
 from src.models.branch import ReleaseBranch
 from src.models.cve import CVEEntry
 from src.models.fix import BranchCVE
-from src.schemas.cve import BranchCVEOut, CVEDetailOut, CVEOut, JiraTicketInfo
+from src.schemas.cve import BranchCVEOut, CVEDetailOut, CVEOut, JiraPostResult, JiraTicketInfo
 
 router = APIRouter(prefix="/cves", tags=["cves"])
 
@@ -93,3 +93,55 @@ async def get_cve(db: DBSession, cve_id: str):
         evidence_json=cve.evidence_json,
         branches=branch_outs,
     )
+
+
+@router.post("/{cve_id}/post-to-jira", response_model=JiraPostResult)
+async def post_cve_to_jira(db: DBSession, cve_id: str):
+    """Post a CVE summary to its linked Jira ticket."""
+    from src.services.config_loader import get_releases_config
+    from src.services.jira_discovery import _get_jira_credentials
+    from src.services.jira_poster import post_cve_summary_to_jira
+
+    result = await db.execute(
+        select(CVEEntry).where(CVEEntry.cve_id == cve_id)
+    )
+    cve = result.scalar_one_or_none()
+    if cve is None:
+        raise HTTPException(status_code=404, detail=f"CVE {cve_id} not found")
+    if not cve.jira_key:
+        raise HTTPException(status_code=400, detail=f"CVE {cve_id} has no linked Jira ticket")
+
+    jira_url, api_token, email = _get_jira_credentials()
+    if not (jira_url and api_token and email):
+        raise HTTPException(status_code=400, detail="Jira credentials not configured")
+
+    bcve_result = await db.execute(
+        select(BranchCVE).where(BranchCVE.cve_id == cve.id)
+    )
+    branch_cves = list(bcve_result.scalars().all())
+    branch_summaries = []
+    for bc in branch_cves:
+        br_result = await db.execute(
+            select(ReleaseBranch).where(ReleaseBranch.id == bc.branch_id)
+        )
+        br = br_result.scalar_one_or_none()
+        branch_summaries.append({
+            "branch_name": br.name if br else bc.branch_id,
+            "risk_level": bc.risk_level,
+            "fix_type": bc.fix_type.value if bc.fix_type else "N/A",
+            "effort_tshirt": bc.effort_tshirt,
+            "confidence": bc.confidence,
+        })
+
+    post_result = await post_cve_summary_to_jira(
+        jira_key=cve.jira_key,
+        cve_id=cve.cve_id,
+        severity=cve.severity_rating,
+        cvss_score=cve.cvss_score,
+        source=cve.source,
+        branch_summaries=branch_summaries,
+        jira_url=jira_url,
+        email=email,
+        api_token=api_token,
+    )
+    return JiraPostResult(**post_result)

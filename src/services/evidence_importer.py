@@ -71,7 +71,7 @@ def _parse_analyze_cve_evidence(data: dict) -> tuple[dict, dict]:
         "risk_level": _normalize_risk(data.get("risk_level", "UNKNOWN")),
         "confidence": data.get("confidence", "UNKNOWN"),
         "dependency_type": "unknown",
-        "current_version": pkg.get("current_version", ""),
+        "current_version": pkg.get("current_version") or "",
         "symbol_reachable": False,
         "jira_verdict": data.get("verdict"),
     }
@@ -108,7 +108,7 @@ def _parse_operator_evidence(data: dict) -> tuple[dict, dict]:
         "risk_level": _normalize_risk(data.get("risk_level", "UNKNOWN")),
         "confidence": data.get("confidence", "UNKNOWN"),
         "dependency_type": proj_dep.get("dependency_type", "unknown"),
-        "current_version": proj_dep.get("current_version", ""),
+        "current_version": proj_dep.get("current_version") or "",
         "symbol_reachable": proj_dep.get("symbol_reachable", False),
     }
 
@@ -142,7 +142,7 @@ def _parse_operand_evidence(data: dict) -> tuple[dict, dict]:
         "risk_level": _normalize_risk(data.get("risk_level", "UNKNOWN")),
         "confidence": confidence.get("level", "UNKNOWN"),
         "dependency_type": dep.get("dependency_type", "unknown"),
-        "current_version": dep.get("current_version", ""),
+        "current_version": dep.get("current_version") or "",
         "symbol_reachable": govulncheck.get("vulnerable_symbols_called", False),
     }
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { api } from "./services/api";
 import type {
   MatrixOut,
@@ -23,41 +24,28 @@ const SEV_COLORS: Record<string, string> = {
   UNKNOWN: "bg-terminal-surface text-terminal-muted border-terminal-border",
 };
 
-const FIX_COLORS: Record<string, string> = {
-  VERSION_BUMP: "bg-blue-900/50 text-blue-300",
-  TRIVIAL_BACKPORT: "bg-cyan-900/50 text-cyan-300",
-  NON_TRIVIAL_BACKPORT: "bg-orange-900/50 text-orange-300",
-  NEEDS_REVIEW: "bg-red-900/50 text-red-300",
-  NOT_APPLICABLE: "bg-terminal-surface text-terminal-muted",
+const FIX_LABELS: Record<string, string> = {
+  VERSION_BUMP: "Version Bump",
+  TRIVIAL_BACKPORT: "Sustaining Backport",
+  NON_TRIVIAL_BACKPORT: "Non-Trivial Backport",
+  NEEDS_REVIEW: "Needs Review",
+  NOT_APPLICABLE: "Not Applicable",
+  CHAIBOT_ANALYSIS_REQUIRED: "ChaiBot Analysis Required",
+};
+
+const FIX_TYPE_COLORS: Record<string, string> = {
+  VERSION_BUMP: "bg-blue-900/50 text-blue-300 border-blue-700",
+  TRIVIAL_BACKPORT: "bg-cyan-900/50 text-cyan-300 border-cyan-700",
+  NON_TRIVIAL_BACKPORT: "bg-orange-900/50 text-orange-300 border-orange-700",
+  NEEDS_REVIEW: "bg-red-900/50 text-red-300 border-red-700",
+  NOT_APPLICABLE: "bg-terminal-surface text-terminal-muted border-terminal-border",
+  CHAIBOT_ANALYSIS_REQUIRED: "bg-amber-900/50 text-amber-300 border-amber-700",
 };
 
 const URGENCY_COLORS: Record<string, string> = {
   CRITICAL: "text-terminal-red border-terminal-red",
   HIGH: "text-terminal-orange border-terminal-orange",
   ROUTINE: "text-terminal-green border-terminal-green",
-};
-
-const FIX_LABELS: Record<string, string> = {
-  VERSION_BUMP: "BUMP",
-  TRIVIAL_BACKPORT: "BACKPORT",
-  NON_TRIVIAL_BACKPORT: "HARD-BP",
-  NEEDS_REVIEW: "REVIEW",
-  NOT_APPLICABLE: "N/A",
-};
-
-const FIX_TYPE_COLORS: Record<string, string> = {
-  VERSION_BUMP: "text-blue-400",
-  TRIVIAL_BACKPORT: "text-cyan-400",
-  NON_TRIVIAL_BACKPORT: "text-orange-400",
-  NEEDS_REVIEW: "text-red-400",
-  NOT_APPLICABLE: "text-gray-500",
-};
-
-const SOURCE_LABELS: Record<string, { icon: string; label: string; cls: string }> = {
-  evidence: { icon: "📄", label: "Evidence", cls: "text-terminal-muted" },
-  govulncheck: { icon: "🛡️", label: "govulncheck", cls: "text-blue-400" },
-  jira: { icon: "🎫", label: "Jira", cls: "text-purple-400" },
-  both: { icon: "🔗", label: "Both", cls: "text-green-400" },
 };
 
 function sevBadge(sev: string) {
@@ -69,24 +57,20 @@ function sevBadge(sev: string) {
   );
 }
 
-function sourceBadge(source: string) {
-  const info = SOURCE_LABELS[source] || SOURCE_LABELS.evidence;
+function fixTypeBadge(fixType: string | null | undefined) {
+  if (!fixType) return <span className="text-terminal-muted text-xs">—</span>;
+  const cls = FIX_TYPE_COLORS[fixType] || FIX_TYPE_COLORS.NEEDS_REVIEW;
+  const label = FIX_LABELS[fixType] || fixType;
   return (
-    <span className={`text-xs ${info.cls}`} title={info.label}>
-      {info.icon}
+    <span className={`px-2 py-0.5 rounded text-xs font-medium border ${cls}`}>
+      {label}
     </span>
   );
 }
 
-function fixTypeBadge(fixType: string | null | undefined) {
-  if (!fixType) return <span className="text-terminal-muted text-xs">—</span>;
-  const cls = FIX_TYPE_COLORS[fixType] || "text-terminal-muted";
-  const label = FIX_LABELS[fixType] || fixType;
-  return (
-    <span className={`text-xs font-medium ${cls}`}>
-      {label}
-    </span>
-  );
+function jiraTicketUrl(jiraBaseUrl: string, jiraKey: string) {
+  const base = jiraBaseUrl.replace(/\/$/, "");
+  return `${base}/browse/${jiraKey}`;
 }
 
 // ─── Branch Single-Select Dropdown ────────────────────────────
@@ -115,183 +99,150 @@ function BranchSelector({
   );
 }
 
-// ─── Matrix cell ─────────────────────────────────────────────
-function CellBadge({ cell }: { cell: MatrixCell | undefined }) {
-  if (!cell)
-    return (
-      <td className="px-2 py-2 text-center text-terminal-muted">—</td>
-    );
-  const ft = cell.fix_type || "";
-  const cls = FIX_COLORS[ft] || FIX_COLORS.NOT_APPLICABLE;
-  const label = FIX_LABELS[ft] || ft.slice(0, 8);
-  return (
-    <td className="px-2 py-2 text-center">
-      <div
-        className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${cls}`}
-      >
-        {label || "—"}
-      </div>
-      <div className="text-[10px] text-terminal-muted mt-0.5">
-        {cell.effort_tshirt} · {cell.effort_hours}h
-      </div>
-    </td>
-  );
+// ─── Component-Grouped CVE Table ─────────────────────────────
+function inferComponent(row: MatrixRow, branchNames: string[]): string {
+  for (const bn of branchNames) {
+    const cell = row.branches[bn];
+    if (cell?.affected_image) {
+      const img = cell.affected_image.toLowerCase();
+      if (img.includes("acmesolver") || img.includes("acme-solver"))
+        return "Operand: jetstack-acmesolver";
+      if (img.includes("controller") && !img.includes("webhook"))
+        return "Operand: jetstack-cert-manager-controller";
+      if (img.includes("webhook"))
+        return "Operand: jetstack-cert-manager-webhook";
+      if (img.includes("cainjector") || img.includes("ca-injector"))
+        return "Operand: jetstack-cert-manager-cainjector";
+      if (img.includes("cert-manager-rhel") || img.includes("cert-manager-operator"))
+        return "Operand: jetstack-cert-manager-rhel9";
+      if (img.includes("operator"))
+        return "Operator";
+      return `Operand: ${img.split("/").pop() || img}`;
+    }
+  }
+  // Fall back to module name
+  const mod = row.affected_module?.toLowerCase() || "";
+  if (mod.includes("operator")) return "Operator";
+  if (mod.includes("cert-manager")) return "Operand: cert-manager";
+  return "Uncategorized";
 }
 
-function jiraTicketUrl(jiraBaseUrl: string, jiraKey: string) {
-  const base = jiraBaseUrl.replace(/\/$/, "");
-  return `${base}/browse/${jiraKey}`;
-}
-
-// ─── CVE Matrix view ─────────────────────────────────────────
-function CVEMatrix({
-  data,
-  jiraBaseUrl,
-  onCVEClick,
-  branches,
-}: {
+interface CVEGroupedViewProps {
   data: MatrixOut | null;
   jiraBaseUrl: string;
   onCVEClick: (cveId: string) => void;
-  branches: ReleaseBranch[];
-}) {
-  if (!data || data.rows.length === 0)
-    return <p className="text-terminal-muted italic">No CVE data loaded.</p>;
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-terminal-border text-terminal-muted text-xs uppercase tracking-wider">
-            <th className="px-2 py-2 text-center w-8">Src</th>
-            <th className="px-3 py-2 text-left">CVE</th>
-            <th className="px-3 py-2 text-left">Severity</th>
-            <th className="px-3 py-2 text-right">CVSS</th>
-            <th className="px-3 py-2 text-left">Fix Type</th>
-            <th className="px-3 py-2 text-left">Module</th>
-            <th className="px-2 py-2 text-center w-10">Jira</th>
-            {data.branch_names.map((b) => {
-              const br = branches.find((x) => x.name === b);
-              return (
-                <th key={b} className="px-2 py-2 text-center whitespace-nowrap">
-                  <div>{b.replace(/^cert-manager-/, "")}</div>
-                  {br?.go_version && (
-                    <div className="text-[9px] text-cyan-400 font-normal mt-0.5">Go {br.go_version}</div>
-                  )}
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-terminal-border/40">
-          {data.rows.map((row) => {
-            const branchCell = data.branch_names.length > 0 ? row.branches[data.branch_names[0]] : undefined;
-            return (
-              <tr
-                key={row.cve_id}
-                className="hover:bg-terminal-surface/60 transition-colors cursor-pointer"
-                onClick={() => onCVEClick(row.cve_id)}
-              >
-                <td className="px-2 py-2 text-center">
-                  {sourceBadge(row.source)}
-                </td>
-                <td className="px-3 py-2 font-medium whitespace-nowrap">
-                  <span className="text-terminal-accent">{row.cve_id}</span>
-                  {row.jira_key && (
-                    <span className="ml-1.5 text-[10px] text-purple-400" title={`Jira: ${row.jira_key}`}>
-                      [{row.jira_key}]
-                    </span>
-                  )}
-                  {row.jira_ticket_count > 1 && (
-                    <span className="ml-1 px-1.5 py-0.5 bg-purple-900/40 text-purple-300 text-[9px] rounded-full font-medium" title={`${row.jira_ticket_count} Jira tickets`}>
-                      {row.jira_ticket_count} tickets
-                    </span>
-                  )}
-                </td>
-                <td className="px-3 py-2">{sevBadge(row.severity)}</td>
-                <td className="px-3 py-2 text-right tabular-nums">
-                  {row.cvss_score != null ? row.cvss_score.toFixed(1) : "—"}
-                </td>
-                <td className="px-3 py-2">
-                  {fixTypeBadge(branchCell?.fix_type)}
-                </td>
-                <td className="px-3 py-2 text-terminal-muted text-xs truncate max-w-[200px]">
-                  {row.affected_module}
-                </td>
-                <td
-                  className="px-2 py-2 text-center"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {row.jira_key ? (
-                    <a
-                      href={jiraTicketUrl(jiraBaseUrl, row.jira_key)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={`Open ${row.jira_key} in Jira`}
-                      className="inline-flex p-1 text-purple-400 hover:text-purple-300 hover:bg-purple-900/30 rounded transition"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                      </svg>
-                    </a>
-                  ) : (
-                    <span className="text-terminal-muted">—</span>
-                  )}
-                </td>
-                {data.branch_names.map((b) => (
-                  <CellBadge key={b} cell={row.branches[b]} />
-                ))}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
 }
 
-// ─── Post to Jira Button ─────────────────────────────────────
-function PostToJiraButton({ cveId }: { cveId: string }) {
-  const [status, setStatus] = useState<"idle" | "posting" | "success" | "failed" | "skipped">("idle");
-  const [message, setMessage] = useState("");
+function CVEGroupedView({ data, jiraBaseUrl, onCVEClick }: CVEGroupedViewProps) {
+  if (!data || data.rows.length === 0)
+    return <p className="text-terminal-muted italic">No CVE data loaded. Click "Full Analysis" to start.</p>;
 
-  const handlePost = async () => {
-    setStatus("posting");
-    setMessage("");
-    try {
-      const result = await api.postCVEToJira(cveId);
-      setStatus(result.status as "success" | "failed" | "skipped");
-      setMessage(result.reason);
-    } catch (err: unknown) {
-      setStatus("failed");
-      setMessage(err instanceof Error ? err.message : "Unknown error");
-    }
-  };
+  // Group CVEs by component
+  const groups: Record<string, MatrixRow[]> = {};
+  for (const row of data.rows) {
+    const comp = inferComponent(row, data.branch_names);
+    if (!groups[comp]) groups[comp] = [];
+    groups[comp].push(row);
+  }
 
-  const btnColors: Record<string, string> = {
-    idle: "bg-purple-900/60 hover:bg-purple-800/70 text-purple-200 border-purple-700",
-    posting: "bg-terminal-surface text-terminal-muted border-terminal-border cursor-wait",
-    success: "bg-green-900/60 text-green-300 border-green-700",
-    failed: "bg-red-900/60 text-red-300 border-red-700",
-    skipped: "bg-yellow-900/40 text-yellow-300 border-yellow-700",
-  };
+  // Sort groups: Operands first, then Operator, then Uncategorized
+  const sortedKeys = Object.keys(groups).sort((a, b) => {
+    if (a.startsWith("Operand") && !b.startsWith("Operand")) return -1;
+    if (!a.startsWith("Operand") && b.startsWith("Operand")) return 1;
+    if (a === "Operator") return b === "Uncategorized" ? -1 : 1;
+    return a.localeCompare(b);
+  });
 
   return (
-    <div>
-      <button
-        onClick={handlePost}
-        disabled={status === "posting"}
-        className={`w-full px-3 py-2 text-sm rounded border transition ${btnColors[status]}`}
-      >
-        {status === "idle" && "📤 Post Summary to Jira"}
-        {status === "posting" && "Posting…"}
-        {status === "success" && "✅ Posted"}
-        {status === "failed" && "❌ Failed — Click to retry"}
-        {status === "skipped" && "⏭ Skipped"}
-      </button>
-      {message && (
-        <p className="text-xs text-terminal-muted mt-1">{message}</p>
-      )}
+    <div className="space-y-6">
+      {sortedKeys.map((groupName) => {
+        const rows = groups[groupName];
+        return (
+          <div key={groupName} className="bg-terminal-surface/20 rounded-lg border border-terminal-border overflow-hidden">
+            <div className="px-4 py-3 bg-terminal-surface/40 border-b border-terminal-border flex items-center gap-3">
+              <span className="text-sm">
+                {groupName.startsWith("Operand") ? "📦" : groupName === "Operator" ? "⚙️" : "📋"}
+              </span>
+              <h3 className="text-sm font-bold text-terminal-text">{groupName}</h3>
+              <span className="text-xs text-terminal-muted ml-auto">{rows.length} CVE{rows.length !== 1 ? "s" : ""}</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-terminal-border/50 text-terminal-muted text-xs uppercase tracking-wider">
+                    <th className="px-4 py-2 text-left">CVE ID</th>
+                    <th className="px-3 py-2 text-left">Jira Ticket</th>
+                    <th className="px-3 py-2 text-left">Fix Type</th>
+                    <th className="px-3 py-2 text-left">Severity</th>
+                    <th className="px-3 py-2 text-right">CVSS</th>
+                    <th className="px-3 py-2 text-left">Due Date</th>
+                    <th className="px-3 py-2 text-left">Module</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-terminal-border/30">
+                  {rows.map((row) => {
+                    const cell = data.branch_names.length > 0 ? row.branches[data.branch_names[0]] : undefined;
+                    const dueDate = cell?.due_date;
+                    const isOverdue = dueDate ? new Date(dueDate) < new Date() : false;
+                    return (
+                      <tr
+                        key={row.cve_id}
+                        className="hover:bg-terminal-surface/60 transition-colors cursor-pointer"
+                        onClick={() => onCVEClick(row.cve_id)}
+                      >
+                        <td className="px-4 py-2.5">
+                          <span className="text-terminal-accent font-medium">{row.cve_id}</span>
+                        </td>
+                        <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                          {row.jira_key ? (
+                            <a
+                              href={jiraTicketUrl(jiraBaseUrl, row.jira_key)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-purple-400 hover:text-purple-300 hover:underline text-xs font-medium"
+                            >
+                              {row.jira_key}
+                            </a>
+                          ) : (
+                            <span className="text-terminal-muted text-xs">—</span>
+                          )}
+                          {row.jira_ticket_count > 1 && (
+                            <span className="ml-1 px-1.5 py-0.5 bg-purple-900/40 text-purple-300 text-[9px] rounded-full font-medium">
+                              +{row.jira_ticket_count - 1}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {fixTypeBadge(cell?.fix_type)}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {sevBadge(row.severity)}
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-terminal-muted">
+                          {row.cvss_score != null ? row.cvss_score.toFixed(1) : "—"}
+                        </td>
+                        <td className="px-3 py-2.5">
+                          {dueDate ? (
+                            <span className={`text-xs font-mono ${isOverdue ? "text-terminal-red font-bold" : "text-terminal-muted"}`}>
+                              {dueDate}
+                              {isOverdue && <span className="ml-1 text-[9px]">⚠️</span>}
+                            </span>
+                          ) : (
+                            <span className="text-terminal-muted text-xs">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2.5 text-terminal-muted text-xs truncate max-w-[200px]">
+                          {row.affected_module}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -308,7 +259,6 @@ function CVEDetailPanel({
 }) {
   const [detail, setDetail] = useState<CVEDetailOut | null>(null);
   const [loading, setLoading] = useState(true);
-  const [showEvidence, setShowEvidence] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -336,10 +286,7 @@ function CVEDetailPanel({
       />
       <div className="fixed right-0 top-0 h-full w-full max-w-lg bg-terminal-bg border-l border-terminal-border z-50 overflow-y-auto shadow-2xl">
         <div className="sticky top-0 bg-terminal-bg border-b border-terminal-border px-5 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <h2 className="text-lg font-bold text-terminal-text">{cveId}</h2>
-            {detail && sourceBadge(detail.source)}
-          </div>
+          <h2 className="text-lg font-bold text-terminal-text">{cveId}</h2>
           <button
             onClick={onClose}
             className="p-1 text-terminal-muted hover:text-terminal-text transition"
@@ -370,44 +317,22 @@ function CVEDetailPanel({
                   {detail.cvss_score != null ? detail.cvss_score.toFixed(1) : "—"}
                 </span>
               </div>
-              {detail.go_vuln_id && (
-                <div>
-                  <span className="text-terminal-muted text-xs block">Go Vuln ID</span>
-                  <span className="text-sm">{detail.go_vuln_id}</span>
-                </div>
-              )}
-              {detail.ghsa_id && (
-                <div>
-                  <span className="text-terminal-muted text-xs block">GHSA</span>
-                  <span className="text-sm">{detail.ghsa_id}</span>
-                </div>
-              )}
               <div className="col-span-2">
                 <span className="text-terminal-muted text-xs block">Module</span>
-                <span className="text-sm font-mono">{detail.affected_module}</span>
+                <span className="text-sm font-mono">{detail.affected_module || "—"}</span>
               </div>
-              {detail.affected_package && (
-                <div className="col-span-2">
-                  <span className="text-terminal-muted text-xs block">Package</span>
-                  <span className="text-sm font-mono">{detail.affected_package}</span>
-                </div>
-              )}
-              {detail.vulnerable_versions && (
-                <div>
-                  <span className="text-terminal-muted text-xs block">Vulnerable</span>
-                  <span className="text-sm font-mono">{detail.vulnerable_versions}</span>
-                </div>
-              )}
               {detail.fixed_version && (
                 <div>
                   <span className="text-terminal-muted text-xs block">Fixed in</span>
                   <span className="text-sm font-mono text-terminal-green">{detail.fixed_version}</span>
                 </div>
               )}
-              <div>
-                <span className="text-terminal-muted text-xs block">Source</span>
-                <span className="text-sm">{sourceBadge(detail.source)} {detail.source}</span>
-              </div>
+              {detail.vulnerable_versions && (
+                <div>
+                  <span className="text-terminal-muted text-xs block">Affected Version</span>
+                  <span className="text-sm font-mono text-terminal-orange">{detail.vulnerable_versions}</span>
+                </div>
+              )}
               {detail.jira_key && (
                 <div>
                   <span className="text-terminal-muted text-xs block">Jira Ticket</span>
@@ -424,12 +349,7 @@ function CVEDetailPanel({
               )}
             </div>
 
-            {/* Post to Jira button */}
-            {detail.jira_key && (
-              <PostToJiraButton cveId={detail.cve_id} />
-            )}
-
-            {/* All linked Jira tickets across branches */}
+            {/* All linked Jira tickets */}
             {(() => {
               const allTickets = detail.branches.flatMap((bc) => bc.jira_tickets || []);
               const seen = new Set<string>();
@@ -470,12 +390,13 @@ function CVEDetailPanel({
 
             {detail.description && (
               <div>
-                <h3 className="text-xs font-bold text-terminal-muted uppercase mb-1">Description</h3>
-                <p className="text-sm text-terminal-text leading-relaxed">{detail.description}</p>
+                <h3 className="text-xs font-bold text-terminal-muted uppercase mb-1">ChaiBot Analysis</h3>
+                <div className="text-sm text-terminal-text leading-relaxed prose prose-invert prose-sm max-w-none bg-terminal-surface/30 p-3 rounded border border-terminal-border max-h-80 overflow-y-auto">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.description}</ReactMarkdown>
+                </div>
               </div>
             )}
 
-            {/* Linked PRs */}
             {linkedPrs.length > 0 && (
               <div>
                 <h3 className="text-xs font-bold text-terminal-muted uppercase mb-2">Linked Pull Requests</h3>
@@ -492,9 +413,6 @@ function CVEDetailPanel({
                         className="flex items-center gap-2 px-3 py-1.5 bg-terminal-surface/40 border border-terminal-border rounded text-sm hover:border-terminal-accent transition"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <svg className="w-4 h-4 text-terminal-muted" fill="currentColor" viewBox="0 0 16 16">
-                          <path d="M7.177 3.073L9.573.677A.25.25 0 0110 .854v4.792a.25.25 0 01-.427.177L7.177 3.427a.25.25 0 010-.354zM3.75 2.5a.75.75 0 100 1.5.75.75 0 000-1.5zm-2.25.75a2.25 2.25 0 113 2.122v5.256a2.251 2.251 0 11-1.5 0V5.372A2.25 2.25 0 011.5 3.25zM11 2.5h-1V4h1a1 1 0 011 1v5.628a2.251 2.251 0 101.5 0V5A2.5 2.5 0 0011 2.5zm1 10.25a.75.75 0 111.5 0 .75.75 0 01-1.5 0zM3.75 12a.75.75 0 100 1.5.75.75 0 000-1.5z" />
-                        </svg>
                         <span className="text-terminal-muted text-xs">{repoPath}</span>
                         <span className="text-terminal-accent font-medium">#{prNum}</span>
                       </a>
@@ -504,21 +422,18 @@ function CVEDetailPanel({
               </div>
             )}
 
-            {/* Per-branch breakdown */}
+            {/* Per-branch analysis (ChaiBot analysis breakdown) */}
             <div>
-              <h3 className="text-xs font-bold text-terminal-muted uppercase mb-2">Branch Analysis</h3>
+              <h3 className="text-xs font-bold text-terminal-muted uppercase mb-2">ChaiBot Analysis</h3>
               <div className="space-y-2">
                 {detail.branches.map((bc) => (
                   <div
                     key={bc.branch_id}
                     className="bg-terminal-surface/40 border border-terminal-border rounded-lg p-3 text-sm"
                   >
-                    <div className="flex justify-between items-start mb-1">
+                    <div className="flex justify-between items-start mb-2">
                       <span className="font-medium text-terminal-text">{bc.branch_name}</span>
-                      <div className="flex items-center gap-2">
-                        {fixTypeBadge(bc.fix_type)}
-                        <span className="text-xs text-terminal-muted">{bc.component}</span>
-                      </div>
+                      {fixTypeBadge(bc.fix_type)}
                     </div>
                     <div className="grid grid-cols-3 gap-2 text-xs">
                       <div>
@@ -528,7 +443,7 @@ function CVEDetailPanel({
                         </span>
                       </div>
                       <div>
-                        <span className="text-terminal-muted block">Fix</span>
+                        <span className="text-terminal-muted block">Fix Type</span>
                         <span>{bc.fix_type ? FIX_LABELS[bc.fix_type] || bc.fix_type : "—"}</span>
                       </div>
                       <div>
@@ -549,6 +464,12 @@ function CVEDetailPanel({
                           {bc.symbol_reachable ? "YES" : "NO"}
                         </span>
                       </div>
+                      {bc.due_date && (
+                        <div className="col-span-3">
+                          <span className="text-terminal-muted block">Due Date</span>
+                          <span className="font-mono text-xs">{bc.due_date}</span>
+                        </div>
+                      )}
                       {bc.affected_image && (
                         <div className="col-span-3">
                           <span className="text-terminal-muted block">Image</span>
@@ -556,34 +477,39 @@ function CVEDetailPanel({
                         </div>
                       )}
                     </div>
+                    {bc.remediation_fix && (
+                      <div className="mt-2 px-2 py-1.5 bg-green-900/20 border border-green-700/30 rounded text-xs text-green-300">
+                        <span className="font-bold">Remediation:</span> {bc.remediation_fix}
+                      </div>
+                    )}
+                    {bc.notes && (
+                      <div className="mt-2 px-2 py-1.5 bg-amber-900/20 border border-amber-700/30 rounded text-xs text-amber-300">
+                        {bc.notes}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* Raw evidence */}
-            <div>
-              <button
-                onClick={() => setShowEvidence(!showEvidence)}
-                className="text-xs font-bold text-terminal-muted uppercase flex items-center gap-1 hover:text-terminal-accent transition"
-              >
-                <svg className={`w-3 h-3 transition-transform ${showEvidence ? "rotate-90" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-                Raw Evidence JSON
-              </button>
-              {showEvidence && (
-                <pre className="mt-2 bg-terminal-surface p-3 rounded text-xs text-terminal-muted overflow-x-auto max-h-64 overflow-y-auto border border-terminal-border">
-                  {(() => {
-                    try {
-                      return JSON.stringify(JSON.parse(detail.evidence_json), null, 2);
-                    } catch {
-                      return detail.evidence_json;
-                    }
-                  })()}
-                </pre>
-              )}
-            </div>
+            {/* Remediation Fix */}
+            {(() => {
+              const allRemediation = detail.branches
+                .map((bc) => bc.remediation_fix)
+                .filter((r) => r && r.trim());
+              const unique = [...new Set(allRemediation)];
+              if (unique.length === 0) return null;
+              return (
+                <div>
+                  <h3 className="text-xs font-bold text-terminal-muted uppercase mb-1">Remediation Fix</h3>
+                  {unique.map((r, i) => (
+                    <div key={i} className="text-sm text-terminal-green bg-green-900/20 border border-green-700/30 rounded px-3 py-2 mb-1">
+                      {r}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         )}
       </div>
@@ -625,72 +551,40 @@ function EffortSummary({ data }: { data: EffortSummaryOut | null }) {
               {b.s_count > 0 && (
                 <div
                   className="bg-blue-600 h-full flex items-center justify-center text-[10px] font-bold"
-                  style={{
-                    width: `${((b.s_count * 3) / (max * 8)) * 100}%`,
-                    minWidth: "20px",
-                  }}
-                  title={`${b.s_count} Small`}
-                >
-                  S:{b.s_count}
-                </div>
+                  style={{ width: `${((b.s_count * 3) / (max * 8)) * 100}%`, minWidth: "20px" }}
+                  title={`${b.s_count} Version Bump`}
+                >S:{b.s_count}</div>
               )}
               {b.m_count > 0 && (
                 <div
                   className="bg-cyan-600 h-full flex items-center justify-center text-[10px] font-bold"
-                  style={{
-                    width: `${((b.m_count * 8) / (max * 8)) * 100}%`,
-                    minWidth: "20px",
-                  }}
-                  title={`${b.m_count} Medium`}
-                >
-                  M:{b.m_count}
-                </div>
+                  style={{ width: `${((b.m_count * 8) / (max * 8)) * 100}%`, minWidth: "20px" }}
+                  title={`${b.m_count} Sustaining Backport`}
+                >M:{b.m_count}</div>
               )}
               {b.l_count > 0 && (
                 <div
                   className="bg-orange-600 h-full flex items-center justify-center text-[10px] font-bold"
-                  style={{
-                    width: `${((b.l_count * 20) / (max * 8)) * 100}%`,
-                    minWidth: "20px",
-                  }}
-                  title={`${b.l_count} Large`}
-                >
-                  L:{b.l_count}
-                </div>
+                  style={{ width: `${((b.l_count * 20) / (max * 8)) * 100}%`, minWidth: "20px" }}
+                  title={`${b.l_count} Non-Trivial Backport`}
+                >L:{b.l_count}</div>
               )}
               {b.xl_count > 0 && (
                 <div
                   className="bg-red-600 h-full flex items-center justify-center text-[10px] font-bold"
-                  style={{
-                    width: `${((b.xl_count * 28) / (max * 8)) * 100}%`,
-                    minWidth: "20px",
-                  }}
-                  title={`${b.xl_count} XL`}
-                >
-                  XL:{b.xl_count}
-                </div>
+                  style={{ width: `${((b.xl_count * 28) / (max * 8)) * 100}%`, minWidth: "20px" }}
+                  title={`${b.xl_count} Needs Review`}
+                >XL:{b.xl_count}</div>
               )}
             </div>
           </div>
         ))}
       </div>
       <div className="flex gap-4 text-[11px] text-terminal-muted">
-        <span className="flex items-center gap-1">
-          <span className="w-3 h-3 rounded bg-blue-600 inline-block" /> S
-          (Bump)
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="w-3 h-3 rounded bg-cyan-600 inline-block" /> M
-          (Backport)
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="w-3 h-3 rounded bg-orange-600 inline-block" /> L
-          (Hard BP)
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="w-3 h-3 rounded bg-red-600 inline-block" /> XL
-          (Review)
-        </span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-blue-600 inline-block" /> S (Bump)</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-cyan-600 inline-block" /> M (Backport)</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-orange-600 inline-block" /> L (Hard BP)</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-3 rounded bg-red-600 inline-block" /> XL (Review)</span>
       </div>
     </div>
   );
@@ -701,7 +595,7 @@ function ReleasePlan({ data }: { data: ReleasePlanOut | null }) {
   if (!data || !data.items || data.items.length === 0)
     return (
       <p className="text-terminal-muted italic">
-        No release plan generated yet.
+        No release plan generated yet. Run Full Analysis first.
       </p>
     );
 
@@ -720,22 +614,12 @@ function ReleasePlan({ data }: { data: ReleasePlanOut | null }) {
             >
               <div className="flex justify-between items-start mb-2">
                 <div>
-                  <span className="font-bold text-terminal-text">
-                    {item.branch_name}
-                  </span>
-                  <span
-                    className={`ml-3 text-xs font-bold uppercase ${uc.split(" ")[0]}`}
-                  >
-                    {item.urgency}
-                  </span>
+                  <span className="font-bold text-terminal-text">{item.branch_name}</span>
+                  <span className={`ml-3 text-xs font-bold uppercase ${uc.split(" ")[0]}`}>{item.urgency}</span>
                 </div>
                 <div className="text-right">
-                  <div className="text-sm font-medium text-terminal-accent">
-                    {item.target_date}
-                  </div>
-                  <div className="text-xs text-terminal-muted">
-                    {item.estimated_effort_days.toFixed(1)} days
-                  </div>
+                  <div className="text-sm font-medium text-terminal-accent">{item.target_date}</div>
+                  <div className="text-xs text-terminal-muted">{item.estimated_effort_days.toFixed(1)} days</div>
                 </div>
               </div>
               <div className="flex flex-wrap gap-1.5">
@@ -749,9 +633,7 @@ function ReleasePlan({ data }: { data: ReleasePlanOut | null }) {
                 ))}
               </div>
               {item.notes && (
-                <div className="mt-2 text-xs text-terminal-muted">
-                  {item.notes}
-                </div>
+                <div className="mt-2 text-xs text-terminal-muted">{item.notes}</div>
               )}
             </div>
           );
@@ -771,7 +653,7 @@ function ReportView() {
     api
       .getReport()
       .then(setMarkdown)
-      .catch(() => setMarkdown("*Failed to load report. Generate a plan first.*"))
+      .catch(() => setMarkdown("*Failed to load report. Run Full Analysis first.*"))
       .finally(() => setLoading(false));
   }, []);
 
@@ -786,9 +668,7 @@ function ReportView() {
   };
 
   if (loading)
-    return (
-      <div className="text-terminal-muted italic">Loading report...</div>
-    );
+    return <div className="text-terminal-muted italic">Loading report...</div>;
 
   return (
     <div className="space-y-3">
@@ -804,7 +684,7 @@ function ReportView() {
         </button>
       </div>
       <div className="prose prose-invert prose-sm max-w-none bg-terminal-surface/30 p-6 rounded-lg border border-terminal-border overflow-auto">
-        <ReactMarkdown>{markdown}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
       </div>
     </div>
   );
@@ -852,10 +732,7 @@ function ScanHistory({ refreshKey }: { refreshKey?: number }) {
             <div>{s.cves_found} CVEs</div>
             <div className="text-[10px]">
               {new Date(s.started_at).toLocaleString(undefined, {
-                month: "short",
-                day: "numeric",
-                hour: "2-digit",
-                minute: "2-digit",
+                month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
               })}
             </div>
           </div>
@@ -896,28 +773,13 @@ function ConfigView() {
   );
 }
 
-// ─── Jira Integration Panel ──────────────────────────────────
-function JiraPanel({ onRefresh }: { onRefresh: () => void }) {
+// ─── Jira Status Panel ───────────────────────────────────────
+function JiraStatusPanel() {
   const [status, setStatus] = useState<JiraStatus | null>(null);
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     api.getJiraStatus().then(setStatus).catch(() => {});
   }, []);
-
-  const handleDiscover = async () => {
-    setLoading(true);
-    try {
-      await api.triggerJiraDiscover();
-      setTimeout(() => {
-        api.getJiraStatus().then(setStatus).catch(() => {});
-        onRefresh();
-      }, 2000);
-    } catch (e) {
-      console.error(e);
-    }
-    setLoading(false);
-  };
 
   if (!status) return null;
 
@@ -926,17 +788,12 @@ function JiraPanel({ onRefresh }: { onRefresh: () => void }) {
       <h3 className="text-[10px] font-bold text-terminal-muted uppercase tracking-wider flex items-center gap-2">
         <span className="text-purple-400">🎫</span> Jira Integration
       </h3>
-
       <div className="grid grid-cols-2 gap-1.5 text-xs">
         <div className="bg-terminal-bg/50 rounded px-2 py-1.5">
           <div className="text-terminal-muted text-[10px]">Status</div>
           <div className={status.enabled ? "text-terminal-green font-bold" : "text-terminal-red"}>
             {status.enabled ? "Enabled" : "Disabled"}
           </div>
-        </div>
-        <div className="bg-terminal-bg/50 rounded px-2 py-1.5">
-          <div className="text-terminal-muted text-[10px]">Project</div>
-          <div className="font-bold text-terminal-accent">{status.project_key}</div>
         </div>
         <div className="bg-terminal-bg/50 rounded px-2 py-1.5">
           <div className="text-terminal-muted text-[10px]">Credentials</div>
@@ -953,22 +810,6 @@ function JiraPanel({ onRefresh }: { onRefresh: () => void }) {
           <div className="font-bold">{status.cves_with_pr_links}</div>
         </div>
       </div>
-
-      {status.last_sync && (
-        <div className="text-[10px] text-terminal-muted">
-          Last sync: {new Date(status.last_sync).toLocaleString(undefined, {
-            month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-          })}
-        </div>
-      )}
-
-      <button
-        className="w-full px-3 py-1.5 bg-purple-900/30 border border-purple-500 text-purple-300 text-xs rounded hover:bg-purple-900/40 transition disabled:opacity-40"
-        disabled={loading || !status.enabled}
-        onClick={handleDiscover}
-      >
-        {loading ? "Discovering..." : "Discover from Jira"}
-      </button>
     </div>
   );
 }
@@ -987,8 +828,7 @@ type ScanProgressMsg = {
 
 const SCAN_STATUS_LABELS: Record<string, string> = {
   jira_discovery: "Discovering CVEs from Jira",
-  checking_out: "Checking out branch",
-  analyzing: "Running analyze-cve",
+  analyzing: "Parsing ChaiBot analysis",
   classifying: "Classifying fix types",
   estimating: "Estimating effort",
 };
@@ -1032,20 +872,12 @@ function SSEProgress({
         }
       } catch { /* ignore */ }
     });
-    es.addEventListener("jira_progress", (e) => {
-      try {
-        setMsg(JSON.parse(e.data));
-      } catch { /* ignore */ }
-    });
-    es.onerror = () => {
-      setMsg(null);
-    };
+    es.onerror = () => { setMsg(null); };
     return () => es.close();
   }, []);
 
   if (!msg) return null;
 
-  // Show a completion banner briefly
   if (msg.status === "all_completed") {
     return (
       <div className="bg-terminal-green/10 border border-terminal-green/30 rounded px-3 py-2 text-xs text-terminal-green">
@@ -1053,10 +885,8 @@ function SSEProgress({
           <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
-          <span className="font-medium">Scan complete</span>
-          <span className="text-terminal-muted">
-            {msg.branches_scanned} branch{msg.branches_scanned !== 1 ? "es" : ""} scanned
-          </span>
+          <span className="font-medium">Analysis complete</span>
+          <span className="text-terminal-muted">{msg.branches_scanned} branch{msg.branches_scanned !== 1 ? "es" : ""}</span>
         </div>
       </div>
     );
@@ -1076,10 +906,7 @@ function SSEProgress({
     );
   }
 
-  const pct =
-    msg.cve_index && msg.cve_total
-      ? Math.round((msg.cve_index / msg.cve_total) * 100)
-      : null;
+  const pct = msg.cve_index && msg.cve_total ? Math.round((msg.cve_index / msg.cve_total) * 100) : null;
 
   return (
     <div className="bg-terminal-accent/10 border border-terminal-accent/30 rounded px-3 py-2 text-xs text-terminal-accent">
@@ -1091,19 +918,12 @@ function SSEProgress({
         <div className="flex-1 min-w-0">
           <div className="font-medium truncate">
             {msg.branch ? msg.branch.replace(/^cert-manager-/, "") : "Branch"}
-            <span className="text-terminal-muted font-normal ml-1">
-              — {scanStatusLabel(msg.status)}
-            </span>
+            <span className="text-terminal-muted font-normal ml-1">— {scanStatusLabel(msg.status)}</span>
           </div>
-          {msg.cve && (
-            <div className="font-mono text-[10px] text-terminal-muted truncate">{msg.cve}</div>
-          )}
+          {msg.cve && <div className="font-mono text-[10px] text-terminal-muted truncate">{msg.cve}</div>}
           {pct !== null && (
             <div className="mt-1.5 h-1 bg-terminal-border rounded overflow-hidden">
-              <div
-                className="h-full bg-terminal-accent transition-all duration-300"
-                style={{ width: `${pct}%` }}
-              />
+              <div className="h-full bg-terminal-accent transition-all duration-300" style={{ width: `${pct}%` }} />
             </div>
           )}
         </div>
@@ -1121,10 +941,9 @@ function AnalysisOverlay({ progress }: { progress: ScanProgressMsg | null }) {
   if (!progress || progress.status === "all_completed") return null;
   if (progress.status === "completed" && progress.cves_found !== undefined) return null;
 
-  const pct =
-    progress.cve_index && progress.cve_total
-      ? Math.round((progress.cve_index / progress.cve_total) * 100)
-      : null;
+  const pct = progress.cve_index && progress.cve_total
+    ? Math.round((progress.cve_index / progress.cve_total) * 100)
+    : null;
 
   return (
     <div className="absolute inset-0 z-20 bg-terminal-bg/70 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
@@ -1139,9 +958,7 @@ function AnalysisOverlay({ progress }: { progress: ScanProgressMsg | null }) {
               {scanStatusLabel(progress.status)}
             </div>
             {progress.branch && (
-              <div className="text-xs text-terminal-muted mt-0.5">
-                {progress.branch.replace(/^cert-manager-/, "")}
-              </div>
+              <div className="text-xs text-terminal-muted mt-0.5">{progress.branch.replace(/^cert-manager-/, "")}</div>
             )}
             {progress.cve && (
               <div className="font-mono text-xs text-terminal-accent mt-2">{progress.cve}</div>
@@ -1153,132 +970,16 @@ function AnalysisOverlay({ progress }: { progress: ScanProgressMsg | null }) {
                   <span>{progress.cve_index}/{progress.cve_total} ({pct}%)</span>
                 </div>
                 <div className="h-1.5 bg-terminal-border rounded overflow-hidden">
-                  <div
-                    className="h-full bg-terminal-accent transition-all duration-300"
-                    style={{ width: `${pct}%` }}
-                  />
+                  <div className="h-full bg-terminal-accent transition-all duration-300" style={{ width: `${pct}%` }} />
                 </div>
               </div>
             )}
             <p className="text-[10px] text-terminal-muted mt-3">
-              This may take several minutes while each CVE is enriched via analyze-cve.
+              Fetching ChaiBot analysis from Jira comments…
             </p>
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-// ─── Sidebar Scan Controls ───────────────────────────────────
-function ScanControls({
-  selectedBranch,
-  onRefresh,
-  onProgressChange,
-}: {
-  selectedBranch: string;
-  onRefresh: () => void;
-  onProgressChange?: (msg: ScanProgressMsg | null) => void;
-}) {
-  const [analyzing, setAnalyzing] = useState(false);
-  const [actionLoading, setActionLoading] = useState("");
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Stop polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
-  }, []);
-
-  async function doAnalyze() {
-    if (!selectedBranch) return;
-    setAnalyzing(true);
-    try {
-      await api.triggerScan("full", [selectedBranch]);
-      let polls = 0;
-      pollRef.current = setInterval(() => {
-        polls++;
-        onRefresh();
-        if (polls > 100 && pollRef.current) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-          setAnalyzing(false);
-        }
-      }, 3000);
-    } catch (e) {
-      console.error(e);
-      setAnalyzing(false);
-    }
-  }
-
-  async function doAction(name: string, fn: () => Promise<unknown>) {
-    setActionLoading(name);
-    try {
-      await fn();
-      onRefresh();
-    } catch (e) {
-      console.error(e);
-    }
-    setActionLoading("");
-  }
-
-  return (
-    <div className="space-y-4">
-      {/* Scan section */}
-      <div className="space-y-2">
-        <h3 className="text-[10px] font-bold text-terminal-muted uppercase tracking-wider">
-          Analyze Branch
-        </h3>
-        <div className="text-[10px] text-terminal-muted mb-1">
-          {selectedBranch ? selectedBranch.replace(/^cert-manager-/, "") : "Select a branch above"}
-        </div>
-        <button
-          className="w-full px-3 py-2 bg-terminal-green/20 border border-terminal-green text-terminal-green text-xs rounded hover:bg-terminal-green/30 transition disabled:opacity-40"
-          disabled={analyzing || !selectedBranch}
-          onClick={doAnalyze}
-        >
-          {analyzing ? "Analyzing…" : "Analyze Branch"}
-        </button>
-        <p className="text-[10px] text-terminal-muted leading-relaxed">
-          Jira discovery → analyze-cve enrichment → classify &amp; estimate
-        </p>
-      </div>
-
-      {/* Generate section */}
-      <div className="space-y-2">
-        <h3 className="text-[10px] font-bold text-terminal-muted uppercase tracking-wider">
-          Generate
-        </h3>
-        <div className="flex gap-2">
-          <button
-            className="flex-1 px-3 py-1.5 bg-terminal-surface border border-terminal-border text-terminal-text text-xs rounded hover:bg-terminal-border/40 transition disabled:opacity-40"
-            disabled={analyzing || !!actionLoading}
-            onClick={() => doAction("sync", () => api.syncBranches())}
-          >
-            {actionLoading === "sync" ? "Syncing..." : "Sync Branches"}
-          </button>
-          <button
-            className="flex-1 px-3 py-1.5 bg-purple-900/30 border border-purple-500 text-purple-300 text-xs rounded hover:bg-purple-900/40 transition disabled:opacity-40"
-            disabled={analyzing || !!actionLoading}
-            onClick={() => doAction("plan", () => api.generatePlan())}
-          >
-            {actionLoading === "plan" ? "Generating..." : "Generate Plan"}
-          </button>
-        </div>
-      </div>
-
-      <SSEProgress
-        onProgressChange={onProgressChange}
-        onScanComplete={() => {
-          if (pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
-          setAnalyzing(false);
-          onRefresh();
-        }}
-      />
     </div>
   );
 }
@@ -1299,13 +1000,14 @@ export default function App() {
   const [jiraBaseUrl, setJiraBaseUrl] = useState("https://redhat.atlassian.net");
   const [displayName, setDisplayName] = useState("");
   const [scanProgress, setScanProgress] = useState<ScanProgressMsg | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
   const branchInitialized = useRef(false);
   const branchSyncInFlight = useRef<Promise<void> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadBranches = useCallback(async () => {
     try {
       let b = await api.getBranches();
-      // Auto-sync branches from config on first load if DB is empty
       if (b.length === 0) {
         if (!branchSyncInFlight.current) {
           branchSyncInFlight.current = api.syncBranches().then(() => undefined).finally(() => {
@@ -1316,7 +1018,6 @@ export default function App() {
         b = await api.getBranches();
       }
       setBranches(b);
-      // Only set default branch once — never reset on refresh/poll
       if (!branchInitialized.current) {
         const first = b.find((br) => br.active);
         if (first) setSelectedBranch(first.name);
@@ -1362,8 +1063,35 @@ export default function App() {
     setScanHistoryKey((k) => k + 1);
   }, [loadBranches, loadData]);
 
+  // Full Analysis button handler — scans ALL active branches
+  async function doFullAnalysis() {
+    setAnalyzing(true);
+    try {
+      await api.triggerFullAnalysis();
+      let polls = 0;
+      pollRef.current = setInterval(() => {
+        polls++;
+        handleRefresh();
+        if (polls > 100 && pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setAnalyzing(false);
+        }
+      }, 3000);
+    } catch (e) {
+      console.error(e);
+      setAnalyzing(false);
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
   const tabs: { key: Tab; label: string }[] = [
-    { key: "matrix", label: "CVE Matrix" },
+    { key: "matrix", label: "CVE Dashboard" },
     { key: "effort", label: "Effort Summary" },
     { key: "plan", label: "Release Plan" },
     { key: "report", label: "Report" },
@@ -1376,10 +1104,10 @@ export default function App() {
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-terminal-green animate-pulse" />
           <h1 className="text-lg font-bold text-terminal-text tracking-tight">
-            Release Planner
+            CVE Release Planner
           </h1>
           <span className="text-xs text-terminal-muted">
-            {displayName || "z-stream release planner"}
+            {displayName || "cert-manager z-stream"}
           </span>
         </div>
         <div className="flex items-center gap-4">
@@ -1388,58 +1116,76 @@ export default function App() {
             selected={selectedBranch}
             onChange={setSelectedBranch}
           />
-          <div className="text-xs text-terminal-muted">CM-1143 POC v6</div>
         </div>
       </header>
 
       <div className="flex-1 flex flex-col lg:flex-row">
         {/* Sidebar */}
-        <aside className="w-full lg:w-80 border-b lg:border-b-0 lg:border-r border-terminal-border bg-terminal-surface/30 p-4 space-y-4 overflow-y-auto">
-          <h2 className="text-sm font-bold text-terminal-muted uppercase tracking-wider">
-            Actions
-          </h2>
-          <ScanControls
-            selectedBranch={selectedBranch}
-            onRefresh={handleRefresh}
+        <aside className="w-full lg:w-72 border-b lg:border-b-0 lg:border-r border-terminal-border bg-terminal-surface/30 p-4 space-y-4 overflow-y-auto">
+          {/* Full Analysis Button */}
+          <div className="space-y-2">
+            <h2 className="text-sm font-bold text-terminal-muted uppercase tracking-wider">
+              Actions
+            </h2>
+            <button
+              className="w-full px-4 py-3 bg-gradient-to-r from-indigo-900/60 to-purple-900/60 border border-indigo-500 text-indigo-200 text-sm font-medium rounded-lg hover:from-indigo-800/70 hover:to-purple-800/70 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              disabled={analyzing}
+              onClick={doFullAnalysis}
+            >
+              {analyzing ? (
+                <>
+                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Analyzing…
+                </>
+              ) : (
+                <>🔬 Full Analysis</>
+              )}
+            </button>
+            <p className="text-[10px] text-terminal-muted leading-relaxed">
+              Jira discovery → ChaiBot comment parsing → Classify → Estimate → Release Plan
+            </p>
+          </div>
+
+          <SSEProgress
             onProgressChange={setScanProgress}
+            onScanComplete={() => {
+              if (pollRef.current) {
+                clearInterval(pollRef.current);
+                pollRef.current = null;
+              }
+              setAnalyzing(false);
+              handleRefresh();
+            }}
           />
 
+          {/* Quick stats */}
           {effort && (
             <div className="pt-4 border-t border-terminal-border space-y-2">
-              <h3 className="text-xs font-bold text-terminal-muted uppercase">
-                Summary
-              </h3>
+              <h3 className="text-xs font-bold text-terminal-muted uppercase">Summary</h3>
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div className="bg-terminal-bg rounded p-2">
-                  <div className="text-terminal-muted text-[10px] uppercase">
-                    CVEs
-                  </div>
-                  <div className="text-xl font-bold text-terminal-accent">
-                    {effort.total_cve_count}
-                  </div>
+                  <div className="text-terminal-muted text-[10px] uppercase">CVEs</div>
+                  <div className="text-xl font-bold text-terminal-accent">{effort.total_cve_count}</div>
                 </div>
                 <div className="bg-terminal-bg rounded p-2">
-                  <div className="text-terminal-muted text-[10px] uppercase">
-                    Effort
-                  </div>
-                  <div className="text-xl font-bold text-terminal-yellow">
-                    {effort.total_effort_days.toFixed(1)}d
-                  </div>
+                  <div className="text-terminal-muted text-[10px] uppercase">Effort</div>
+                  <div className="text-xl font-bold text-terminal-yellow">{effort.total_effort_days.toFixed(1)}d</div>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Jira Integration */}
+          {/* Jira status */}
           <div className="pt-4 border-t border-terminal-border">
-            <JiraPanel onRefresh={handleRefresh} />
+            <JiraStatusPanel />
           </div>
 
           {/* Scan History */}
           <div className="pt-4 border-t border-terminal-border space-y-2">
-            <h3 className="text-xs font-bold text-terminal-muted uppercase">
-              Scan History
-            </h3>
+            <h3 className="text-xs font-bold text-terminal-muted uppercase">Scan History</h3>
             <ScanHistory refreshKey={scanHistoryKey} />
           </div>
 
@@ -1476,7 +1222,7 @@ export default function App() {
 
           <div className="overflow-auto">
             {tab === "matrix" && (
-              <CVEMatrix data={matrix} jiraBaseUrl={jiraBaseUrl} onCVEClick={setSelectedCVE} branches={branches} />
+              <CVEGroupedView data={matrix} jiraBaseUrl={jiraBaseUrl} onCVEClick={setSelectedCVE} />
             )}
             {tab === "effort" && <EffortSummary data={effort} />}
             {tab === "plan" && <ReleasePlan data={plan} />}

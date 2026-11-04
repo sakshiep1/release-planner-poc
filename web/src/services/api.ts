@@ -72,6 +72,15 @@ export const api = {
       }),
     }),
 
+  triggerFullAnalysis: (branches?: string[]) =>
+    fetch(`${BASE}/scans/full-analysis`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        branches: branches?.length ? branches : null,
+      }),
+    }),
+
   generatePlan: () => fetch(`${BASE}/plan/generate`, { method: "POST" }),
 
   syncBranches: () => fetch(`${BASE}/branches/sync`, { method: "POST" }),

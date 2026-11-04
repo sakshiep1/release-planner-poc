@@ -18,6 +18,7 @@ TSHIRT_MAP = {
     FixType.NON_TRIVIAL_BACKPORT: "L",
     FixType.NEEDS_REVIEW: "XL",
     FixType.NOT_APPLICABLE: "-",
+    FixType.CHAIBOT_ANALYSIS_REQUIRED: "?",
 }
 
 
@@ -32,6 +33,7 @@ def estimate_single(fix_type: FixType, cvss_score: float | None = None) -> tuple
         FixType.NON_TRIVIAL_BACKPORT: defaults.non_trivial_backport_hours,
         FixType.NEEDS_REVIEW: defaults.needs_review_hours,
         FixType.NOT_APPLICABLE: 0.0,
+        FixType.CHAIBOT_ANALYSIS_REQUIRED: 0.0,
     }
 
     base_hours = hours_map.get(fix_type, 0.0)

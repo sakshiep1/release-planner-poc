@@ -28,6 +28,8 @@ export interface MatrixCell {
   component: string;
   jira_verdict: string | null;
   affected_image: string | null;
+  due_date: string | null;
+  notes: string;
   jira_ticket_count: number;
   jira_tickets: JiraTicketInfo[];
 }
@@ -37,6 +39,7 @@ export interface MatrixRow {
   severity: string;
   cvss_score: number | null;
   affected_module: string;
+  fixed_version: string | null;
   source: string;
   jira_key: string | null;
   linked_prs: string[];
@@ -99,6 +102,9 @@ export interface BranchCVEOut {
   component: string;
   jira_verdict: string | null;
   affected_image: string | null;
+  due_date: string | null;
+  notes: string;
+  remediation_fix: string;
   jira_tickets: JiraTicketInfo[];
 }
 

@@ -65,12 +65,15 @@ async def get_cve(db: DBSession, cve_id: str):
             dependency_type=bc.dependency_type,
             current_version=bc.current_version,
             symbol_reachable=bc.symbol_reachable,
-            fix_type=bc.fix_type.value if bc.fix_type else None,
+            fix_type=bc.fix_type.value if bc.fix_type else "NEEDS_REVIEW",
             effort_hours=bc.effort_hours,
             effort_tshirt=bc.effort_tshirt,
             component=bc.component,
             jira_verdict=bc.jira_verdict,
             affected_image=bc.affected_image,
+            due_date=bc.due_date.isoformat() if bc.due_date else None,
+            notes=bc.notes or "",
+            remediation_fix=bc.remediation_fix or "",
             jira_tickets=tickets,
         ))
 
@@ -90,7 +93,7 @@ async def get_cve(db: DBSession, cve_id: str):
         jira_key=cve.jira_key,
         source=cve.source,
         linked_prs=cve.linked_prs,
-        evidence_json=cve.evidence_json,
+        evidence_json="{}",
         branches=branch_outs,
     )
 

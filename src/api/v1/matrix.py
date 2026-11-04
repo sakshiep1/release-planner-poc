@@ -73,13 +73,15 @@ async def get_matrix(db: DBSession, branches: str | None = None):
 
                 branch_cells[bname] = MatrixCell(
                     risk_level=bc.risk_level,
-                    fix_type=bc.fix_type.value if bc.fix_type else "",
+                    fix_type=bc.fix_type.value if bc.fix_type else "NEEDS_REVIEW",
                     effort_tshirt=bc.effort_tshirt,
                     effort_hours=bc.effort_hours,
                     symbol_reachable=bc.symbol_reachable,
                     component=bc.component,
                     jira_verdict=bc.jira_verdict,
                     affected_image=bc.affected_image,
+                    due_date=bc.due_date.isoformat() if bc.due_date else None,
+                    notes=bc.notes or "",
                     jira_ticket_count=len(tickets),
                     jira_tickets=tickets,
                 )
@@ -97,6 +99,7 @@ async def get_matrix(db: DBSession, branches: str | None = None):
                 severity=cve.severity_rating,
                 cvss_score=cve.cvss_score,
                 affected_module=cve.affected_module,
+                fixed_version=cve.fixed_version,
                 source=cve.source,
                 jira_key=cve.jira_key,
                 linked_prs=pr_list,

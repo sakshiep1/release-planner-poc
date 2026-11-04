@@ -42,6 +42,22 @@ JIRA_SEVERITY_MAP: dict[str, str] = {
 }
 
 
+VERSION_FROM_TITLE_RE = re.compile(
+    r"(?:cert-manager[- ]?)(\d+\.\d+(?:\.\d+)?)"
+    r"|(?:\[v?(\d+\.\d+(?:\.\d+)?)\])"
+    r"|(?:v(\d+\.\d+\.\d+))",
+    re.IGNORECASE,
+)
+
+
+def extract_version_from_title(summary: str) -> str:
+    """Extract a version string like '1.18' from a Jira ticket title."""
+    m = VERSION_FROM_TITLE_RE.search(summary)
+    if m:
+        return m.group(1) or m.group(2) or m.group(3) or ""
+    return ""
+
+
 @dataclass
 class JiraVulnerabilityTicket:
     """Structured data from a Jira Vulnerability-type ticket."""
@@ -58,6 +74,7 @@ class JiraVulnerabilityTicket:
     affected_versions: list[str] = field(default_factory=list)
     due_date: str = ""
     labels: list[str] = field(default_factory=list)
+    version: str = ""
 
 
 def _get_jira_credentials() -> tuple[str, str, str]:
@@ -165,6 +182,8 @@ def parse_vulnerability_ticket(issue: dict) -> JiraVulnerabilityTicket | None:
     due_date = fields.get("duedate") or ""
     labels = fields.get("labels") or []
 
+    version = extract_version_from_title(summary)
+
     return JiraVulnerabilityTicket(
         jira_key=key,
         cve_id=cve_id,
@@ -179,6 +198,7 @@ def parse_vulnerability_ticket(issue: dict) -> JiraVulnerabilityTicket | None:
         affected_versions=affected_versions,
         due_date=due_date,
         labels=labels,
+        version=version,
     )
 
 

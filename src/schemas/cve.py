@@ -51,6 +51,9 @@ class BranchCVEOut(BaseModel):
     component: str = "operator"
     jira_verdict: str | None = None
     affected_image: str | None = None
+    due_date: str | None = None
+    notes: str = ""
+    remediation_fix: str = ""
     jira_tickets: list[JiraTicketInfo] = []
 
     model_config = {"from_attributes": True}

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.db.base import Base
@@ -16,6 +16,7 @@ class FixType(str, enum.Enum):
     NON_TRIVIAL_BACKPORT = "NON_TRIVIAL_BACKPORT"
     NOT_APPLICABLE = "NOT_APPLICABLE"
     NEEDS_REVIEW = "NEEDS_REVIEW"
+    CHAIBOT_ANALYSIS_REQUIRED = "CHAIBOT_ANALYSIS_REQUIRED"
 
 
 class BranchCVE(Base):
@@ -40,6 +41,8 @@ class BranchCVE(Base):
     jira_verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
     affected_image: Mapped[str | None] = mapped_column(String(128), nullable=True)
     linked_jira_tickets_json: Mapped[str] = mapped_column(Text, default="[]")
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    remediation_fix: Mapped[str] = mapped_column(Text, default="")
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

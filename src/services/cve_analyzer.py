@@ -15,7 +15,7 @@ from src.core.config import get_settings
 from src.core.sse import sse_broker
 from src.models.branch import ReleaseBranch
 from src.models.cve import CVEEntry
-from src.models.fix import BranchCVE
+from src.models.fix import BranchCVE, FixType
 from src.models.scan import ScanRun
 from src.services.config_loader import get_releases_config
 from src.services.evidence_importer import import_evidence_directory
@@ -407,41 +407,308 @@ async def discover_from_jira(
         branch.name, tickets_total, unique_in_scan, branch_cve_count, imported,
     )
 
-    # Post CVE summaries to Jira if enabled (never fails the pipeline)
-    config = get_releases_config()
-    if config.jira.post_results_to_jira:
-        try:
-            from src.services.jira_poster import post_cve_summary_to_jira
-
-            jira_url, api_token, email = _get_jira_credentials()
-            if jira_url and api_token and email:
-                for ticket in tickets:
-                    if not ticket.jira_key:
-                        continue
-                    try:
-                        await post_cve_summary_to_jira(
-                            jira_key=ticket.jira_key,
-                            cve_id=ticket.cve_id,
-                            severity=ticket.severity,
-                            cvss_score=ticket.cvss_score,
-                            source="jira",
-                            branch_summaries=[{
-                                "branch_name": branch.name,
-                                "risk_level": ticket.severity,
-                                "fix_type": "N/A",
-                                "effort_tshirt": "",
-                                "confidence": "HIGH",
-                            }],
-                            jira_url=jira_url,
-                            email=email,
-                            api_token=api_token,
-                        )
-                    except Exception:
-                        logger.debug("Jira post failed for %s (non-fatal)", ticket.jira_key, exc_info=True)
-        except Exception:
-            logger.debug("Jira posting skipped due to error (non-fatal)", exc_info=True)
-
     return scan
+
+
+async def discover_from_jira_full(
+    db: AsyncSession,
+    branch: ReleaseBranch,
+) -> ScanRun:
+    """Full Analysis: Jira discovery + ChaiBot comment parsing.
+
+    Fetches Jira comments for every vulnerability ticket and parses ChaiBot
+    reports by comment content. Tickets with no ChaiBot comment are marked
+    CHAIBOT_ANALYSIS_REQUIRED.
+    """
+    from src.services.jira_discovery import (
+        discover_vulnerability_tickets_for_branch,
+        _get_jira_credentials,
+    )
+    from src.services.jira_comment_parser import (
+        fetch_ticket_comments,
+        find_chaibot_comment_text,
+    )
+    from src.services.llm_comment_analyzer import analyze_chaibot_comment
+    from src.services.fix_classifier import classify_all
+    from src.services.effort_estimator import estimate_all
+    from src.services.plan_generator import generate_plan
+
+    scan = ScanRun(
+        branch_id=branch.id, scan_type="full",
+        status="running",
+    )
+    db.add(scan)
+    await db.flush()
+
+    await sse_broker.publish("scan_progress", {
+        "branch": branch.name, "status": "jira_discovery",
+    })
+
+    try:
+        tickets = await discover_vulnerability_tickets_for_branch(branch.name)
+    except Exception:
+        logger.exception("Jira Vulnerability discovery failed for %s", branch.name)
+        scan.status = "failed"
+        scan.error_log = "Jira Vulnerability query failed"
+        scan.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+        return scan
+
+    jira_url, api_token, email = _get_jira_credentials()
+    imported = 0
+    analyzed_count = 0
+    unanalyzed_count = 0
+
+    def _ticket_info(t) -> dict:
+        return {
+            "jira_key": t.jira_key,
+            "summary": t.summary,
+            "status": t.status,
+            "affected_image": t.affected_image,
+        }
+
+    def _parse_due_date(raw: str) -> "date | None":
+        if not raw:
+            return None
+        try:
+            from datetime import date as date_type
+            return date_type.fromisoformat(raw)
+        except (ValueError, TypeError):
+            return None
+
+    for i, ticket in enumerate(tickets):
+        cve_id = ticket.cve_id
+
+        await sse_broker.publish("scan_progress", {
+            "branch": branch.name,
+            "status": "analyzing",
+            "cve": cve_id,
+            "progress": f"{i + 1}/{len(tickets)}",
+            "cve_index": i + 1,
+            "cve_total": len(tickets),
+        })
+
+        # Always fetch comments; detect ChaiBot by comment body (not Jira labels)
+        chaibot_data = None
+        raw_comment_text = None
+        if jira_url and api_token and email:
+            try:
+                comments = await fetch_ticket_comments(
+                    jira_url, api_token, email, ticket.jira_key,
+                )
+                if not comments:
+                    logger.debug("No comments on %s", ticket.jira_key)
+                raw_comment_text = find_chaibot_comment_text(comments)
+                if raw_comment_text:
+                    chaibot_data = await analyze_chaibot_comment(
+                        raw_comment_text, ticket.summary, ticket.affected_image,
+                    )
+                    if chaibot_data and chaibot_data.get("has_analysis"):
+                        analyzed_count += 1
+                        logger.info(
+                            "LLM analyzed ChaiBot comment for %s (%s): verdict=%s, fix=%s",
+                            cve_id, ticket.jira_key,
+                            chaibot_data.get("verdict"),
+                            chaibot_data.get("fix_classification"),
+                        )
+                    else:
+                        chaibot_data = None
+            except Exception:
+                logger.exception("Failed to fetch/analyze comments for %s", ticket.jira_key)
+
+        if not chaibot_data:
+            unanalyzed_count += 1
+
+        # Create or update CVEEntry
+        result = await db.execute(select(CVEEntry).where(CVEEntry.cve_id == cve_id))
+        existing = result.scalar_one_or_none()
+
+        # Use the full raw ChaiBot comment as the description if available
+        description_text = raw_comment_text or ticket.summary
+
+        if existing is None:
+            cve_entry = CVEEntry(
+                cve_id=cve_id,
+                severity_rating=ticket.severity,
+                cvss_score=ticket.cvss_score,
+                affected_module=chaibot_data.get("module", "") if chaibot_data else ticket.upstream_component,
+                source="jira",
+                jira_key=ticket.jira_key,
+                linked_prs="[]",
+                go_vuln_id=chaibot_data.get("go_vuln_id") if chaibot_data else None,
+                ghsa_id=chaibot_data.get("ghsa_id") if chaibot_data else None,
+                fixed_version=chaibot_data.get("fixed_version") if chaibot_data else None,
+                description=description_text,
+            )
+            db.add(cve_entry)
+            await db.flush()
+            cve_db_id = cve_entry.id
+        else:
+            if existing.severity_rating in (None, "UNKNOWN") and ticket.severity != "UNKNOWN":
+                existing.severity_rating = ticket.severity
+            if existing.cvss_score is None and ticket.cvss_score is not None:
+                existing.cvss_score = ticket.cvss_score
+            if not existing.affected_module and ticket.upstream_component:
+                existing.affected_module = ticket.upstream_component
+            if not existing.jira_key:
+                existing.jira_key = ticket.jira_key
+            if existing.source in ("govulncheck", "evidence"):
+                existing.source = "both"
+            # Always overwrite description with full raw comment when available
+            if raw_comment_text:
+                existing.description = description_text
+            # Enrich from ChaiBot LLM analysis
+            if chaibot_data:
+                if chaibot_data.get("go_vuln_id") and not existing.go_vuln_id:
+                    existing.go_vuln_id = chaibot_data["go_vuln_id"]
+                if chaibot_data.get("ghsa_id") and not existing.ghsa_id:
+                    existing.ghsa_id = chaibot_data["ghsa_id"]
+                if chaibot_data.get("fixed_version") and not existing.fixed_version:
+                    existing.fixed_version = chaibot_data["fixed_version"]
+                if chaibot_data.get("module") and not existing.affected_module:
+                    existing.affected_module = chaibot_data["module"]
+            cve_db_id = existing.id
+
+        # Create or update BranchCVE
+        bcve_result = await db.execute(
+            select(BranchCVE).where(
+                BranchCVE.branch_id == branch.id,
+                BranchCVE.cve_id == cve_db_id,
+            )
+        )
+        existing_bcve = bcve_result.scalar_one_or_none()
+
+        due_date = _parse_due_date(ticket.due_date)
+
+        if existing_bcve is None:
+            bcve_fields = {
+                "branch_id": branch.id,
+                "cve_id": cve_db_id,
+                "confidence": "HIGH" if chaibot_data else "LOW",
+                "component": "operator",
+                "affected_image": ticket.affected_image,
+                "linked_jira_tickets_json": json.dumps([_ticket_info(ticket)]),
+                "due_date": due_date,
+            }
+
+            if chaibot_data:
+                bcve_fields["risk_level"] = chaibot_data.get("risk_level", "UNKNOWN")
+                bcve_fields["dependency_type"] = chaibot_data.get("dependency_type", "unknown")
+                bcve_fields["current_version"] = chaibot_data.get("current_version", "") or ""
+                bcve_fields["symbol_reachable"] = chaibot_data.get("symbol_reachable", False)
+                bcve_fields["remediation_fix"] = chaibot_data.get("remediation_fix", "") or ""
+                chaibot_fix = chaibot_data.get("fix_classification", "NEEDS_REVIEW")
+                try:
+                    bcve_fields["fix_type"] = FixType(chaibot_fix)
+                except ValueError:
+                    bcve_fields["fix_type"] = FixType.NEEDS_REVIEW
+                bcve_fields["notes"] = f"LLM: {chaibot_fix}"
+            else:
+                bcve_fields["risk_level"] = ticket.severity if ticket.severity != "UNKNOWN" else "UNKNOWN"
+                bcve_fields["dependency_type"] = "unknown"
+                bcve_fields["current_version"] = ""
+                bcve_fields["symbol_reachable"] = False
+                bcve_fields["remediation_fix"] = ""
+                bcve_fields["fix_type"] = FixType.CHAIBOT_ANALYSIS_REQUIRED
+                bcve_fields["notes"] = "No ChaiBot comment found on ticket"
+
+            db.add(BranchCVE(**bcve_fields))
+            imported += 1
+        else:
+            if ticket.affected_image and not existing_bcve.affected_image:
+                existing_bcve.affected_image = ticket.affected_image
+            if due_date and not existing_bcve.due_date:
+                existing_bcve.due_date = due_date
+            # Enrich from LLM analysis
+            if chaibot_data:
+                existing_bcve.risk_level = chaibot_data.get("risk_level", existing_bcve.risk_level)
+                existing_bcve.dependency_type = chaibot_data.get("dependency_type", existing_bcve.dependency_type)
+                existing_bcve.current_version = chaibot_data.get("current_version", "") or ""
+                existing_bcve.symbol_reachable = chaibot_data.get("symbol_reachable", False)
+                existing_bcve.remediation_fix = chaibot_data.get("remediation_fix", "") or ""
+                existing_bcve.confidence = "HIGH"
+                chaibot_fix = chaibot_data.get("fix_classification", "NEEDS_REVIEW")
+                try:
+                    existing_bcve.fix_type = FixType(chaibot_fix)
+                except ValueError:
+                    existing_bcve.fix_type = FixType.NEEDS_REVIEW
+                existing_bcve.notes = f"LLM: {chaibot_fix}"
+            elif not existing_bcve.fix_type or existing_bcve.fix_type == FixType.CHAIBOT_ANALYSIS_REQUIRED:
+                existing_bcve.fix_type = FixType.CHAIBOT_ANALYSIS_REQUIRED
+                existing_bcve.notes = "No ChaiBot comment found on ticket"
+            # Merge ticket links
+            try:
+                existing_tickets = json.loads(existing_bcve.linked_jira_tickets_json or "[]")
+            except (json.JSONDecodeError, TypeError):
+                existing_tickets = []
+            existing_keys = {t.get("jira_key") for t in existing_tickets}
+            if ticket.jira_key not in existing_keys:
+                existing_tickets.append(_ticket_info(ticket))
+                existing_bcve.linked_jira_tickets_json = json.dumps(existing_tickets)
+
+    await db.commit()
+
+    # Run classification + estimation + plan generation
+    await sse_broker.publish("scan_progress", {"branch": branch.name, "status": "classifying"})
+    try:
+        await classify_all(db)
+        await sse_broker.publish("scan_progress", {"branch": branch.name, "status": "estimating"})
+        await estimate_all(db)
+        await generate_plan(db)
+    except Exception:
+        logger.exception("Post-scan classify/estimate/plan failed for %s", branch.name)
+
+    bcve_count_result = await db.execute(
+        select(BranchCVE).where(BranchCVE.branch_id == branch.id)
+    )
+    branch_cve_count = len(list(bcve_count_result.scalars().all()))
+
+    scan.status = "completed"
+    scan.cves_found = branch_cve_count
+    scan.completed_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    await sse_broker.publish("scan_progress", {
+        "branch": branch.name,
+        "status": "completed",
+        "cves_found": branch_cve_count,
+    })
+    logger.info(
+        "Full Analysis for %s: %d tickets → %d CVE rows (%d analyzed by LLM, %d pending)",
+        branch.name, len(tickets), branch_cve_count, analyzed_count, unanalyzed_count,
+    )
+    return scan
+
+
+async def run_full_analysis_all_branches(
+    db: AsyncSession,
+    branch_filter: list[str] | None = None,
+) -> list[ScanRun]:
+    """Run Full Analysis (Jira + ChaiBot comments) across active branches."""
+    config = get_releases_config()
+    target_branches = config.active_branches
+    if branch_filter:
+        filter_set = set(branch_filter)
+        target_branches = [b for b in target_branches if b.name in filter_set]
+
+    results = []
+    for branch_cfg in target_branches:
+        res = await db.execute(select(ReleaseBranch).where(ReleaseBranch.name == branch_cfg.name))
+        branch = res.scalar_one_or_none()
+        if branch is None:
+            logger.warning("Branch %s not in DB, skipping", branch_cfg.name)
+            continue
+        try:
+            scan = await discover_from_jira_full(db, branch)
+            results.append(scan)
+        except Exception:
+            logger.exception("Full Analysis failed for branch %s", branch_cfg.name)
+
+    await sse_broker.publish("scan_progress", {
+        "status": "all_completed",
+        "branches_scanned": len(results),
+    })
+    return results
 
 
 async def analyze_branch(

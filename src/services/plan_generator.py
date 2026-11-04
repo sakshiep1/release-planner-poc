@@ -54,10 +54,14 @@ async def generate_plan(db: AsyncSession) -> ReleasePlan:
         bcve_result = await db.execute(
             select(BranchCVE).where(
                 BranchCVE.branch_id == branch.id,
-                BranchCVE.fix_type != FixType.NOT_APPLICABLE,
             )
         )
-        branch_cves = list(bcve_result.scalars().all())
+        all_branch_cves = list(bcve_result.scalars().all())
+        # Include all CVEs except NOT_APPLICABLE
+        branch_cves = [
+            bc for bc in all_branch_cves
+            if bc.fix_type != FixType.NOT_APPLICABLE
+        ]
 
         if not branch_cves:
             continue
@@ -81,8 +85,16 @@ async def generate_plan(db: AsyncSession) -> ReleasePlan:
             else:
                 routine_cves.append((bcve, cve))
 
+        def _earliest_target(cve_pairs: list[tuple[BranchCVE, CVEEntry]], sla_days: int) -> date:
+            """Use earliest Jira due_date or SLA-based target, whichever is sooner."""
+            sla_target = today + timedelta(days=sla_days)
+            jira_dates = [bc.due_date for bc, _ in cve_pairs if bc.due_date]
+            if jira_dates:
+                return min(min(jira_dates), sla_target)
+            return sla_target
+
         if critical_cves:
-            target = today + timedelta(days=rules.critical_cve_days)
+            target = _earliest_target(critical_cves, rules.critical_cve_days)
             effort = aggregate_branch_effort([bc for bc, _ in critical_cves])
             item = PlanItem(
                 plan_id=plan.id,
@@ -92,12 +104,12 @@ async def generate_plan(db: AsyncSession) -> ReleasePlan:
                 urgency="CRITICAL",
                 estimated_effort_days=effort["total_days"],
                 cve_ids_json=json.dumps([cve.cve_id for _, cve in critical_cves]),
-                notes=f"{len(critical_cves)} CRITICAL CVE(s) - {rules.critical_cve_days}-day SLA",
+                notes=f"{len(critical_cves)} CRITICAL CVE(s) - target {target.isoformat()}",
             )
             db.add(item)
 
         if high_cves:
-            target = today + timedelta(days=rules.high_cve_days)
+            target = _earliest_target(high_cves, rules.high_cve_days)
             effort = aggregate_branch_effort([bc for bc, _ in high_cves])
             item = PlanItem(
                 plan_id=plan.id,
@@ -107,12 +119,12 @@ async def generate_plan(db: AsyncSession) -> ReleasePlan:
                 urgency="HIGH",
                 estimated_effort_days=effort["total_days"],
                 cve_ids_json=json.dumps([cve.cve_id for _, cve in high_cves]),
-                notes=f"{len(high_cves)} HIGH CVE(s) - {rules.high_cve_days}-day SLA",
+                notes=f"{len(high_cves)} HIGH CVE(s) - target {target.isoformat()}",
             )
             db.add(item)
 
         if routine_cves and rules.medium_low_batch:
-            target = today + timedelta(days=rules.high_cve_days + 14)
+            target = _earliest_target(routine_cves, rules.high_cve_days + 14)
             effort = aggregate_branch_effort([bc for bc, _ in routine_cves])
             item = PlanItem(
                 plan_id=plan.id,
@@ -122,7 +134,7 @@ async def generate_plan(db: AsyncSession) -> ReleasePlan:
                 urgency="ROUTINE",
                 estimated_effort_days=effort["total_days"],
                 cve_ids_json=json.dumps([cve.cve_id for _, cve in routine_cves]),
-                notes=f"{len(routine_cves)} MEDIUM/LOW CVE(s) - batched into next z-stream",
+                notes=f"{len(routine_cves)} MEDIUM/LOW CVE(s) - batched, target {target.isoformat()}",
             )
             db.add(item)
 

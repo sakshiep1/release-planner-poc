@@ -53,6 +53,9 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         for col, col_type, default in [
             ("linked_jira_tickets_json", "TEXT", "'[]'"),
+            ("due_date", "DATE", "NULL"),
+            ("notes", "TEXT", "''"),
+            ("remediation_fix", "TEXT", "''"),
         ]:
             try:
                 await conn.execute(

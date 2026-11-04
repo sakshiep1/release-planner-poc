@@ -134,3 +134,47 @@ async def trigger_scan(db: DBSession, req: ScanRequest, background_tasks: Backgr
     mode = mode_labels.get(scan_type, scan_type)
     scope = f"branches={branch_filter}" if branch_filter else "all active branches"
     return {"status": "scan_started", "message": f"Scan running in background ({mode}, {scope})"}
+
+
+@router.post("/full-analysis")
+async def trigger_full_analysis(db: DBSession, req: ScanRequest, background_tasks: BackgroundTasks):
+    """Full Analysis: Jira discovery + ChaiBot comment parsing.
+
+    Discovers CVEs from Jira Vulnerability tickets, fetches all ticket comments,
+    parses ChaiBot analysis from comment body, classifies fix types,
+    estimates effort, and generates a release plan.
+    """
+    # Ensure branches are synced first
+    config = get_releases_config()
+    for bc in config.branches:
+        result = await db.execute(select(ReleaseBranch).where(ReleaseBranch.name == bc.name))
+        if result.scalar_one_or_none() is None:
+            branch = ReleaseBranch(
+                name=bc.name,
+                ocp_version=bc.ocp_version,
+                cert_manager_version=bc.cert_manager_version,
+                go_version=bc.go_version,
+                support_start=bc.support_start,
+                support_end=bc.support_end,
+                is_eus=bc.is_eus,
+                active=bc.active,
+            )
+            db.add(branch)
+    await db.commit()
+
+    branch_filter = req.branches or ([req.branch_name] if req.branch_name else None)
+
+    async def _do_full_analysis():
+        factory = get_session_factory()
+        async with factory() as session:
+            from src.services.cve_analyzer import run_full_analysis_all_branches
+            await run_full_analysis_all_branches(
+                session, branch_filter=branch_filter,
+            )
+
+    background_tasks.add_task(_do_full_analysis)
+    scope = f"branches={branch_filter}" if branch_filter else "all active branches"
+    return {
+        "status": "scan_started",
+        "message": f"Full Analysis running in background (Jira + ChaiBot comments, {scope})",
+    }

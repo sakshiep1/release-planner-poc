@@ -131,14 +131,27 @@ def classify_single(
     if risk == "LOW" and not branch_cve.symbol_reachable:
         return FixType.NOT_APPLICABLE
 
-    # No real analysis data at all — leave unclassified
+    # Preserve fix type from LLM analysis (or legacy ChaiBot: prefix)
+    if (
+        branch_cve.notes
+        and (branch_cve.notes.startswith("LLM:") or branch_cve.notes.startswith("ChaiBot:"))
+        and branch_cve.fix_type
+        and branch_cve.fix_type != FixType.CHAIBOT_ANALYSIS_REQUIRED
+    ):
+        return branch_cve.fix_type
+
+    # If already marked as CHAIBOT_ANALYSIS_REQUIRED, keep it
+    if branch_cve.fix_type == FixType.CHAIBOT_ANALYSIS_REQUIRED:
+        return FixType.CHAIBOT_ANALYSIS_REQUIRED
+
+    # No real analysis data at all — needs ChaiBot or manual review
     if (
         risk == "UNKNOWN"
         and not branch_cve.current_version
         and not cve.fixed_version
         and branch_cve.dependency_type.lower() == "unknown"
     ):
-        return None
+        return FixType.NEEDS_REVIEW
 
     # No fixed version known
     if not cve.fixed_version:
@@ -169,7 +182,16 @@ def classify_single(
         else:
             return FixType.VERSION_BUMP
 
-    # Unknown dependency type
+    if dep_type in ("third_party_product", "transitive", "vendored"):
+        if branch_cve.symbol_reachable:
+            gap = _version_gap_size(current, fixed)
+            if gap == "major":
+                return FixType.NON_TRIVIAL_BACKPORT
+            return FixType.TRIVIAL_BACKPORT
+        else:
+            return FixType.VERSION_BUMP
+
+    # Unknown dependency type — always classify, never NULL
     return FixType.NEEDS_REVIEW
 
 
@@ -189,6 +211,9 @@ async def classify_all(db: AsyncSession) -> int:
 
         bcve.risk_level = normalize_risk_level(bcve.risk_level)
         fix_type = classify_single(bcve, cve)
+        # Never leave fix_type as NULL
+        if fix_type is None:
+            fix_type = FixType.NEEDS_REVIEW
         bcve.fix_type = fix_type
 
         classified += 1
